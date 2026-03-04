@@ -41,6 +41,8 @@ export type {
   BeamParams,
   StairParams,
   RoofParams,
+  IfcElementClass,
+  RawBrepParams,
 
   // Properties & quantities
   PropertyType,

@@ -31,6 +31,8 @@ import { createListSlice, type ListSlice } from './slices/listSlice.js';
 import { createPinboardSlice, type PinboardSlice } from './slices/pinboardSlice.js';
 import { createLensSlice, type LensSlice } from './slices/lensSlice.js';
 import { createScriptSlice, type ScriptSlice } from './slices/scriptSlice.js';
+import { createEditorSlice, type EditorSlice } from './slices/editorSlice.js';
+import { createNodeEditorSlice, type NodeEditorSlice } from './slices/nodeEditorSlice.js';
 import { invalidateVisibleBasketCache } from './basketVisibleSet.js';
 
 // Import constants for reset function
@@ -71,6 +73,8 @@ export type { LensSlice, Lens, LensRule, LensCriteria } from './slices/lensSlice
 
 // Re-export Script types
 export type { ScriptSlice } from './slices/scriptSlice.js';
+export type { EditorSlice } from './slices/editorSlice.js';
+export type { NodeEditorSlice } from './slices/nodeEditorSlice.js';
 
 // Combined store type
 export type ViewerState = LoadingSlice &
@@ -91,7 +95,9 @@ export type ViewerState = LoadingSlice &
   ListSlice &
   PinboardSlice &
   LensSlice &
-  ScriptSlice & {
+  ScriptSlice &
+  EditorSlice &
+  NodeEditorSlice & {
     resetViewerState: () => void;
   };
 
@@ -119,6 +125,8 @@ export const useViewerStore = create<ViewerState>()((...args) => ({
   ...createPinboardSlice(...args),
   ...createLensSlice(...args),
   ...createScriptSlice(...args),
+  ...createEditorSlice(...args),
+  ...createNodeEditorSlice(...args),
 
   // Reset all viewer state when loading new file
   // Note: Does NOT clear models - use clearAllModels() for that
@@ -258,6 +266,11 @@ export const useViewerStore = create<ViewerState>()((...args) => ({
       idsLoading: false,
       idsProgress: null,
       idsError: null,
+
+      // Editor
+      editorPanelVisible: false,
+      editorNewProjectDialogOpen: false,
+      nodeEditorPanelVisible: false,
       idsActiveSpecificationId: null,
       idsActiveEntityId: null,
       // Keep idsDocument, idsValidationReport, idsLocale - user's work

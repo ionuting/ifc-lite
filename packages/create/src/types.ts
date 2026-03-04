@@ -146,6 +146,30 @@ export interface RoofParams extends ElementAttributes {
   Slope?: number;
 }
 
+/** IFC element classes supported for semantic classification of raw geometry */
+export type IfcElementClass =
+  | 'IfcBuildingElementProxy'
+  | 'IfcWall'
+  | 'IfcColumn'
+  | 'IfcBeam'
+  | 'IfcSlab'
+  | 'IfcRoof'
+  | 'IfcStair';
+
+/** Raw BREP (faceted shell) that can be classified now or later */
+export interface RawBrepParams extends ElementAttributes {
+  /** Placement origin */
+  Position: Point3D;
+  /** Vertex list in local coordinates */
+  Vertices: Point3D[];
+  /** Face loops as vertex indices (0-based, each loop length >= 3) */
+  Faces: number[][];
+  /** Initial semantic class (defaults to IfcBuildingElementProxy) */
+  IfcClass?: IfcElementClass;
+  /** Optional IFC predefined type token (e.g. '.STANDARD.', '.COLUMN.') */
+  PredefinedType?: string;
+}
+
 // ============================================================================
 // Property / Quantity helpers
 // ============================================================================
@@ -222,6 +246,10 @@ export interface ProjectParams {
   LengthUnit?: string;
   Author?: string;
   Organization?: string;
+  /** Override default IfcSite name (default: 'Site') */
+  SiteName?: string;
+  /** Override default IfcBuilding name (default: 'Building') */
+  BuildingName?: string;
 }
 
 /** Site-level options */

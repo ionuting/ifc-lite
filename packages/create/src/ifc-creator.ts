@@ -21,6 +21,7 @@
 import type {
   Point3D, Point2D, Placement3D, RectangularOpening,
   WallParams, SlabParams, ColumnParams, BeamParams, StairParams, RoofParams,
+  IfcElementClass, RawBrepParams,
   ProjectParams, SiteParams, BuildingParams, StoreyParams,
   PropertySetDef, PropertyDef, QuantitySetDef, QuantityDef,
   MaterialDef, MaterialLayerDef,
@@ -117,6 +118,9 @@ export class IfcCreator {
   // Material tracking (deferred IfcRelAssociatesMaterial at finalization)
   private materialCache: Map<string, number> = new Map();       // name → IfcMaterial id
   private elementMaterials: Map<number, number> = new Map();     // elementId → materialRefId
+
+  // Raw geometry elements that can be reclassified after creation
+  private rawElementRecords: Map<number, { lineIndex: number; entityIndex: number }> = new Map();
 
   // Tracking for spatial aggregation
   private storeyIds: number[] = [];
@@ -432,6 +436,78 @@ export class IfcCreator {
     return roofId;
   }
 
+  /**
+   * Create a raw faceted BREP element.
+   *
+   * This is intended for "draw first, classify later" editor workflows:
+   * - create with default IfcBuildingElementProxy
+   * - later call classifyRawElement(...) to convert semantics (IfcWall, IfcColumn, ...)
+   */
+  addIfcRawBrep(storeyId: number, params: RawBrepParams): number {
+    const placementId = this.addLocalPlacement(this.worldPlacementId, {
+      Location: params.Position,
+    });
+
+    const brepId = this.addFacetedBrep(params.Vertices, params.Faces);
+    const shapeId = this.addShapeRepresentation('Body', [brepId], 'Brep');
+    const prodShapeId = this.addProductDefinitionShape([shapeId]);
+
+    const elementId = this.id();
+    const globalId = newGlobalId();
+    const ifcClass = params.IfcClass ?? 'IfcBuildingElementProxy';
+    const stepType = this.toStepEntityType(ifcClass);
+    const name = params.Name ?? 'Raw Element';
+    const desc = params.Description ? `'${esc(params.Description)}'` : '$';
+    const objType = params.ObjectType ? `'${esc(params.ObjectType)}'` : '$';
+    const tag = params.Tag ? `'${esc(params.Tag)}'` : '$';
+    const predefinedType = this.normalizePredefinedType(params.PredefinedType ?? '.NOTDEFINED.');
+
+    this.line(elementId, stepType,
+      `'${globalId}',#${this.ownerHistoryId},'${esc(name)}',${desc},${objType},#${placementId},#${prodShapeId},${tag},${predefinedType}`);
+
+    this.elementSolids.set(elementId, [brepId]);
+    this.trackElement(storeyId, elementId);
+
+    const entityIndex = this.entities.length;
+    this.entities.push({ expressId: elementId, type: ifcClass, Name: name });
+    this.rawElementRecords.set(elementId, {
+      lineIndex: this.lines.length - 1,
+      entityIndex,
+    });
+
+    return elementId;
+  }
+
+  /**
+   * Reclassify a previously-created raw BREP element.
+   *
+   * Example: IfcBuildingElementProxy → IfcWall
+   */
+  classifyRawElement(elementId: number, ifcClass: IfcElementClass, predefinedType?: string): void {
+    const record = this.rawElementRecords.get(elementId);
+    if (!record) {
+      throw new Error(`Element #${elementId} is not a raw BREP element created by addIfcRawBrep()`);
+    }
+
+    const stepType = this.toStepEntityType(ifcClass);
+    const existing = this.lines[record.lineIndex];
+
+    const replacedType = existing.replace(
+      new RegExp(`^#${elementId}=[A-Z0-9_]+\\(`),
+      `#${elementId}=${stepType}(`,
+    );
+
+    const nextPredefinedType = this.normalizePredefinedType(predefinedType ?? '.NOTDEFINED.');
+    const replacedPredefined = replacedType.replace(/,\.[A-Z0-9_]+\.\);$/, `,${nextPredefinedType});`);
+
+    if (replacedPredefined === replacedType && !replacedType.endsWith(`,${nextPredefinedType});`)) {
+      throw new Error(`Could not update predefined type for element #${elementId}`);
+    }
+
+    this.lines[record.lineIndex] = replacedPredefined;
+    this.entities[record.entityIndex].type = ifcClass;
+  }
+
   // ============================================================================
   // Public API — Properties & Quantities
   // ============================================================================
@@ -654,16 +730,18 @@ ENDSEC;
     // IfcSite
     this.siteId = this.id();
     const siteGlobalId = newGlobalId();
+    const siteName = params.SiteName ?? 'Site';
     this.line(this.siteId, 'IFCSITE',
-      `'${siteGlobalId}',#${this.ownerHistoryId},'Site',$,$,#${this.worldPlacementId},$,$,.ELEMENT.,$,$,$,$,$`);
-    this.entities.push({ expressId: this.siteId, type: 'IfcSite', Name: 'Site' });
+      `'${siteGlobalId}',#${this.ownerHistoryId},'${esc(siteName)}',$,$,#${this.worldPlacementId},$,$,.ELEMENT.,$,$,$,$,$`);
+    this.entities.push({ expressId: this.siteId, type: 'IfcSite', Name: siteName });
 
     // IfcBuilding
     this.buildingId = this.id();
     const buildingGlobalId = newGlobalId();
+    const buildingName = params.BuildingName ?? 'Building';
     this.line(this.buildingId, 'IFCBUILDING',
-      `'${buildingGlobalId}',#${this.ownerHistoryId},'Building',$,$,#${this.worldPlacementId},$,$,.ELEMENT.,$,$,$`);
-    this.entities.push({ expressId: this.buildingId, type: 'IfcBuilding', Name: 'Building' });
+      `'${buildingGlobalId}',#${this.ownerHistoryId},'${esc(buildingName)}',$,$,#${this.worldPlacementId},$,$,.ELEMENT.,$,$,$`);
+    this.entities.push({ expressId: this.buildingId, type: 'IfcBuilding', Name: buildingName });
   }
 
   private buildUnits(lengthUnit: string): number {
@@ -881,15 +959,59 @@ ENDSEC;
     return id;
   }
 
-  private addShapeRepresentation(repType: string, itemIds: number[]): number {
+  private addShapeRepresentation(repType: string, itemIds: number[], representationType?: string): number {
     const contextRef = repType === 'Axis' ? this.subContextAxis : this.subContextBody;
     const refs = itemIds.map(id => `#${id}`).join(',');
     const repId = this.id();
     const repIdentifier = repType === 'Axis' ? 'Axis' : 'Body';
-    const repTypeName = itemIds.length > 1 ? 'SolidModel' : 'SweptSolid';
+    const repTypeName = representationType ?? (itemIds.length > 1 ? 'SolidModel' : 'SweptSolid');
     this.line(repId, 'IFCSHAPEREPRESENTATION',
       `#${contextRef},'${repIdentifier}','${repTypeName}',(${refs})`);
     return repId;
+  }
+
+  private addFacetedBrep(vertices: Point3D[], faces: number[][]): number {
+    if (vertices.length < 4) {
+      throw new Error('Raw BREP requires at least 4 vertices');
+    }
+    if (faces.length < 4) {
+      throw new Error('Raw BREP requires at least 4 faces');
+    }
+
+    const vertexIds = vertices.map(v => this.addCartesianPoint(v));
+    const faceIds: number[] = [];
+
+    for (const face of faces) {
+      if (face.length < 3) {
+        throw new Error('Each BREP face must have at least 3 vertex indices');
+      }
+
+      const refs: string[] = [];
+      for (const idx of face) {
+        const vertexId = vertexIds[idx];
+        if (!vertexId) {
+          throw new Error(`Face references out-of-range vertex index ${idx}`);
+        }
+        refs.push(`#${vertexId}`);
+      }
+
+      const loopId = this.id();
+      this.line(loopId, 'IFCPOLYLOOP', `(${refs.join(',')})`);
+
+      const boundId = this.id();
+      this.line(boundId, 'IFCFACEOUTERBOUND', `#${loopId},.T.`);
+
+      const faceId = this.id();
+      this.line(faceId, 'IFCFACE', `(#${boundId})`);
+      faceIds.push(faceId);
+    }
+
+    const shellId = this.id();
+    this.line(shellId, 'IFCCLOSEDSHELL', `(${faceIds.map(id => `#${id}`).join(',')})`);
+
+    const brepId = this.id();
+    this.line(brepId, 'IFCFACETEDBREP', `#${shellId}`);
+    return brepId;
   }
 
   private addProductDefinitionShape(repIds: number[]): number {
@@ -1082,5 +1204,17 @@ ENDSEC;
     const up: Point3D = Math.abs(axis[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
     const cross = vecCross(up, axis);
     return vecNorm(cross);
+  }
+
+  private toStepEntityType(ifcClass: IfcElementClass): string {
+    return ifcClass.toUpperCase();
+  }
+
+  private normalizePredefinedType(predefinedType: string): string {
+    const token = predefinedType.trim().toUpperCase();
+    if (!/^\.[A-Z0-9_]+\.$/.test(token)) {
+      throw new Error(`Invalid predefined type token "${predefinedType}". Expected IFC enum token like .NOTDEFINED.`);
+    }
+    return token;
   }
 }

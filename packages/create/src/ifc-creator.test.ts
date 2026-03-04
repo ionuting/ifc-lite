@@ -174,6 +174,64 @@ describe('IfcCreator', () => {
     expect(result.content).toContain("'Flat Roof'");
   });
 
+  it('creates raw faceted BREP geometry as IfcBuildingElementProxy', () => {
+    const creator = new IfcCreator();
+    const storey = creator.addIfcBuildingStorey({ Name: 'GF', Elevation: 0 });
+
+    creator.addIfcRawBrep(storey, {
+      Name: 'Raw Cube',
+      Position: [0, 0, 0],
+      Vertices: [
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+      ],
+      Faces: [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+      ],
+    });
+
+    const result = creator.toIfc();
+    expect(result.content).toContain('IFCBUILDINGELEMENTPROXY');
+    expect(result.content).toContain('IFCFACETEDBREP');
+    expect(result.content).toContain('IFCCLOSEDSHELL');
+    expect(result.content).toContain("'Brep'");
+  });
+
+  it('reclassifies raw BREP geometry from proxy to typed IFC class', () => {
+    const creator = new IfcCreator();
+    const storey = creator.addIfcBuildingStorey({ Name: 'GF', Elevation: 0 });
+
+    const rawId = creator.addIfcRawBrep(storey, {
+      Name: 'Unclassified Mass',
+      Position: [0, 0, 0],
+      Vertices: [
+        [0, 0, 0], [2, 0, 0], [2, 0.3, 0], [0, 0.3, 0],
+        [0, 0, 3], [2, 0, 3], [2, 0.3, 3], [0, 0.3, 3],
+      ],
+      Faces: [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+      ],
+    });
+
+    creator.classifyRawElement(rawId, 'IfcWall', '.STANDARD.');
+    const result = creator.toIfc();
+
+    expect(result.content).not.toContain('IFCBUILDINGELEMENTPROXY');
+    expect(result.content).toContain('IFCWALL');
+    expect(result.content).toContain('.STANDARD.');
+    expect(result.entities.some(e => e.expressId === rawId && e.type === 'IfcWall')).toBe(true);
+  });
+
   it('creates a sloped roof', () => {
     const creator = new IfcCreator();
     const storey = creator.addIfcBuildingStorey({ Name: 'GF', Elevation: 0 });

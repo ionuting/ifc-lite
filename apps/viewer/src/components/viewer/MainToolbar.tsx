@@ -59,11 +59,12 @@ import { executeBasketIsolate } from '@/store/basket/basketCommands';
 import { useIfc } from '@/hooks/useIfc';
 import { cn } from '@/lib/utils';
 import { GLTFExporter, CSVExporter } from '@ifc-lite/export';
-import { FileSpreadsheet, FileJson, FileText, Filter, Upload, Pencil } from 'lucide-react';
+import { FileSpreadsheet, FileJson, FileText, Filter, Upload, Pencil, Network } from 'lucide-react';
 import { ExportDialog } from './ExportDialog';
 import { BulkPropertyEditor } from './BulkPropertyEditor';
 import { DataConnector } from './DataConnector';
 import { ExportChangesButton } from './ExportChangesButton';
+import { IfcBridgeConnector } from './IfcBridgeConnector';
 import { useFloorplanView } from '@/hooks/useFloorplanView';
 import { recordRecentFiles, cacheFileBlobs } from '@/lib/recent-files';
 import { ThemeSwitch } from './ThemeSwitch';
@@ -195,6 +196,12 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
   const lensPanelVisible = useViewerStore((state) => state.lensPanelVisible);
   const toggleLensPanel = useViewerStore((state) => state.toggleLensPanel);
   const setLensPanelVisible = useViewerStore((state) => state.setLensPanelVisible);
+  const editorPanelVisible = useViewerStore((state) => state.editorPanelVisible);
+  const toggleEditorPanel = useViewerStore((state) => state.toggleEditorPanel);
+  const setEditorPanelVisible = useViewerStore((state) => state.setEditorPanelVisible);
+  const nodeEditorPanelVisible = useViewerStore((state) => state.nodeEditorPanelVisible);
+  const toggleNodeEditorPanel = useViewerStore((state) => state.toggleNodeEditorPanel);
+  const setNodeEditorPanelVisible = useViewerStore((state) => state.setNodeEditorPanelVisible);
 
   // Check which type geometries exist across ALL loaded models (federation-aware).
   // PERF: Use meshes.length as dep proxy instead of full geometryResult, and
@@ -636,6 +643,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
                 // Close other right-panel content first, then expand
                 setIdsPanelVisible(false);
                 setLensPanelVisible(false);
+                setEditorPanelVisible(false);
                 setRightPanelCollapsed(false);
               }
               toggleBcfPanel();
@@ -660,6 +668,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
                 // Close other right-panel content first, then expand
                 setBcfPanelVisible(false);
                 setLensPanelVisible(false);
+                setEditorPanelVisible(false);
                 setRightPanelCollapsed(false);
               }
               toggleIdsPanel();
@@ -833,6 +842,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
                 // Close other right-panel content first, then expand
                 setBcfPanelVisible(false);
                 setIdsPanelVisible(false);
+                setEditorPanelVisible(false);
                 setRightPanelCollapsed(false);
               }
               toggleLensPanel();
@@ -843,6 +853,54 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
           </Button>
         </TooltipTrigger>
         <TooltipContent>Lens (Color Rules)</TooltipContent>
+      </Tooltip>
+
+      {/* Editor (semantic + raw geometry authoring) */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant={editorPanelVisible ? 'default' : 'ghost'}
+            size="icon-sm"
+            onClick={(e) => {
+              (e.currentTarget as HTMLButtonElement).blur();
+              if (!editorPanelVisible) {
+                setBcfPanelVisible(false);
+                setIdsPanelVisible(false);
+                setLensPanelVisible(false);
+                setRightPanelCollapsed(false);
+              }
+              toggleEditorPanel();
+            }}
+            className={cn(editorPanelVisible && 'bg-primary text-primary-foreground')}
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Semantic Editor</TooltipContent>
+      </Tooltip>
+
+      {/* Node Graph Editor */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant={nodeEditorPanelVisible ? 'default' : 'ghost'}
+            size="icon-sm"
+            onClick={(e) => {
+              (e.currentTarget as HTMLButtonElement).blur();
+              if (!nodeEditorPanelVisible) {
+                setEditorPanelVisible(false);
+                setBcfPanelVisible(false);
+                setIdsPanelVisible(false);
+                setLensPanelVisible(false);
+              }
+              toggleNodeEditorPanel();
+            }}
+            className={cn(nodeEditorPanelVisible && 'bg-primary text-primary-foreground')}
+          >
+            <Network className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Node Graph Editor</TooltipContent>
       </Tooltip>
 
       <Separator orientation="vertical" className="h-6 mx-1" />
@@ -947,6 +1005,9 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
 
       {/* Right Side Actions */}
       <div className="flex items-center gap-2 ml-2 pl-2 border-l border-zinc-200 dark:border-zinc-700/60">
+        {/* Live IFC bridge — connect to external C# / Nodify server */}
+        <IfcBridgeConnector />
+        <Separator orientation="vertical" className="h-4" />
         <Tooltip>
           <TooltipTrigger asChild>
             <div>

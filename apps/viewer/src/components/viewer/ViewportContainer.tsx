@@ -11,7 +11,8 @@ import { BasketPresentationDock } from './BasketPresentationDock';
 import { useViewerStore } from '@/store';
 import { useIfc } from '@/hooks/useIfc';
 import { useWebGPU } from '@/hooks/useWebGPU';
-import { Upload, MousePointer, Layers, Info, Command, AlertTriangle, ChevronDown, ExternalLink, Plus } from 'lucide-react';
+import { Upload, MousePointer, Layers, Info, Command, AlertTriangle, ChevronDown, ExternalLink, Plus, FilePlus2, Wifi } from 'lucide-react';
+import { IfcBridgeConnector } from './IfcBridgeConnector';
 import type { MeshData, CoordinateInfo, GeometryResult } from '@ifc-lite/geometry';
 
 const ZERO_VEC3 = { x: 0, y: 0, z: 0 };
@@ -30,6 +31,9 @@ export function ViewportContainer() {
   // Multi-model support: get all loaded models from store (for merged geometry)
   const storeModels = useViewerStore((s) => s.models);
   const resetViewerState = useViewerStore((s) => s.resetViewerState);
+  const setEditorPanelVisible = useViewerStore((s) => s.setEditorPanelVisible);
+  const setRightPanelCollapsed = useViewerStore((s) => s.setRightPanelCollapsed);
+  const setEditorNewProjectDialogOpen = useViewerStore((s) => s.setEditorNewProjectDialogOpen);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [showTroubleshooting, setShowTroubleshooting] = useState(false);
@@ -534,6 +538,42 @@ export function ViewportContainer() {
               <Upload className={`h-4 w-4 transition-transform ${webgpu.supported ? 'group-hover:-translate-y-0.5' : ''}`} />
               <span>{webgpu.checking ? 'Checking WebGPU...' : webgpu.supported ? 'Open .ifc file' : 'WebGPU Required'}</span>
             </button>
+
+            {/* New blank project shortcut */}
+            <button
+              onClick={() => {
+                if (!webgpu.supported || webgpu.checking) return;
+                setEditorPanelVisible(true);
+                setRightPanelCollapsed(false);
+                setEditorNewProjectDialogOpen(true);
+              }}
+              disabled={!webgpu.supported || webgpu.checking}
+              className={`group w-full flex items-center justify-center gap-3 px-6 py-3 font-mono text-sm border transition-all mt-2 ${
+                !webgpu.supported || webgpu.checking
+                  ? 'border-zinc-200 dark:border-[#3b4261]/50 text-zinc-300 dark:text-[#565f89]/50 cursor-not-allowed'
+                  : 'border-dashed border-zinc-300 dark:border-[#3b4261] text-zinc-500 dark:text-[#565f89] hover:border-primary hover:text-primary cursor-pointer'
+              }`}
+            >
+              <FilePlus2 className="h-4 w-4" />
+              <span>New blank IFC project</span>
+            </button>
+
+            {/* Live bridge shortcut */}
+            <IfcBridgeConnector
+              trigger={
+                <button
+                  disabled={!webgpu.supported || webgpu.checking}
+                  className={`group w-full flex items-center justify-center gap-3 px-6 py-3 font-mono text-sm border transition-all mt-2 ${
+                    !webgpu.supported || webgpu.checking
+                      ? 'border-zinc-200 dark:border-[#3b4261]/50 text-zinc-300 dark:text-[#565f89]/50 cursor-not-allowed'
+                      : 'border-dashed border-zinc-300 dark:border-[#3b4261] text-zinc-500 dark:text-[#565f89] hover:border-green-500 hover:text-green-600 dark:hover:border-green-400 dark:hover:text-green-400 cursor-pointer'
+                  }`}
+                >
+                  <Wifi className="h-4 w-4" />
+                  <span>Connect live IFC server</span>
+                </button>
+              }
+            />
 
             <p className="mt-3 text-xs font-mono text-zinc-400 dark:text-[#565f89]">
               {webgpu.supported ? 'or drag & drop anywhere' : 'file upload disabled'}
