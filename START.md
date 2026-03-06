@@ -10,8 +10,8 @@ pnpm dev
 
 ### Alternativ, doar viewer-ul (fără rebuild):
 
-```bash
-pnpm --filter viewer dev
+```bashpnpm --filter viewer dev
+
 ```
 
 ## Alte comenzi utile
