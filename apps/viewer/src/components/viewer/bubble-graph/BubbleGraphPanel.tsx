@@ -1535,11 +1535,12 @@ export function BubbleGraphPanel({ visible, onClose }: BubbleGraphPanelProps) {
       properties: { bottomElevation: bottomElev, topElevation: topElev, axesX: xs, axesY: ys, width: maxX, height: maxY, discipline },
       locked: true,
     }];
-    let idx = 0;
+    // Generate ax nodes with deterministic IDs based on grid indices
+    // ax_grid_0_0 is the same node at any storey (same X-Y position globally)
     for (let i = 0; i < ys.length; i++) {
       for (let j = 0; j < xs.length; j++) {
         newNodes.push({
-          id: `ax_${storeyId}_${idx++}`,
+          id: `ax_grid_${j}_${i}`,  // Deterministic ID: same at every storey
           type: 'ax',
           name: `${j + 1}-${String.fromCharCode(65 + i)}`,
           x: cx + (xs[j] - maxX / 2),

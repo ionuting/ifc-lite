@@ -53,12 +53,14 @@ function geomDim(
  * @param nodes        All BubbleGraph nodes
  * @param edges        All BubbleGraph edges
  * @param projectName  IFC project name (used as filename too)
+ * @param buildingAxes Global axis grid positions (xValues, yValues in mm)
  * @returns            A `File` ready to pass to `loadFile()`
  */
 export function generateIfcFromGraph(
   nodes: BubbleGraphNode[],
   edges: BubbleGraphEdge[],
   projectName = 'Untitled Project',
+  buildingAxes?: { xValues: number[]; yValues: number[] },
 ): File {
   const creator = new IfcCreator({
     Name: projectName,
@@ -100,9 +102,24 @@ export function generateIfcFromGraph(
       if (hasCol !== 'True' && hasCol !== true) continue;
 
       const colType = (ax.properties.column_type as string) ?? 'C25x25';
+      
+      // Determine column position:
+      // If buildingAxes is provided and ax has gridX/gridY,
+      // use the real global axis coordinates.
+      // Otherwise fall back to canvas position.
+      let posX = mm(ax.x), posY = mm(ax.y);
+      if (buildingAxes) {
+        const gx = ax.properties.gridX as number | undefined;
+        const gy = ax.properties.gridY as number | undefined;
+        if (gx != null && gy != null && gx < buildingAxes.xValues.length && gy < buildingAxes.yValues.length) {
+          posX = mm(buildingAxes.xValues[gx]);
+          posY = mm(buildingAxes.yValues[gy]);
+        }
+      }
+
       creator.addIfcColumn(storeyId, {
         Name: `COL-${ax.name}`,
-        Position: [mm(ax.x), mm(ax.y), bottomElevM],
+        Position: [posX, posY, bottomElevM],
         Width:  geomDim(colType, 'width',  0.25),
         Depth:  geomDim(colType, 'depth',  0.25),
         Height: storeyH,
@@ -138,8 +155,24 @@ export function generateIfcFromGraph(
         wallHeight = storeyH;
       }
 
-      const wxA = mm(axA.x), wyA = mm(axA.y);
-      const wxB = mm(axB.x), wyB = mm(axB.y);
+      // Use building axes coordinates if available, otherwise fall back to canvas position
+      let wxA = mm(axA.x), wyA = mm(axA.y);
+      let wxB = mm(axB.x), wyB = mm(axB.y);
+
+      if (buildingAxes) {
+        const gxA = axA.properties.gridX as number | undefined;
+        const gyA = axA.properties.gridY as number | undefined;
+        if (gxA != null && gyA != null && gxA < buildingAxes.xValues.length && gyA < buildingAxes.yValues.length) {
+          wxA = mm(buildingAxes.xValues[gxA]);
+          wyA = mm(buildingAxes.yValues[gyA]);
+        }
+        const gxB = axB.properties.gridX as number | undefined;
+        const gyB = axB.properties.gridY as number | undefined;
+        if (gxB != null && gyB != null && gxB < buildingAxes.xValues.length && gyB < buildingAxes.yValues.length) {
+          wxB = mm(buildingAxes.xValues[gxB]);
+          wyB = mm(buildingAxes.yValues[gyB]);
+        }
+      }
       const wLen = Math.hypot(wxB - wxA, wyB - wyA);
       const dirX = wLen > 0 ? (wxB - wxA) / wLen : 1;
       const dirY = wLen > 0 ? (wyB - wyA) / wLen : 0;
