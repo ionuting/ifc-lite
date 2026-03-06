@@ -32,7 +32,8 @@ export function SlabNode({ id, data, selected }: NodeProps<SlabFlowNode>) {
       <NodeField label="Thick">
         <NodeInput type="number" value={data.thickness} onChange={v => upd({ thickness: Number(v) })} step={0.05} />
       </NodeField>
-      <Handle type="target" position={Position.Left} style={{ background: '#a855f7' }} />
+      <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '35%' }} title="Storey" />
+      <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '70%' }} title="Transform list" />
     </BaseNode>
   );
 }

@@ -32,7 +32,9 @@ export function WallNode({ id, data, selected }: NodeProps<WallFlowNode>) {
       <NodeField label="Height">
         <NodeInput type="number" value={data.height} onChange={v => upd({ height: Number(v) })} step={0.5} />
       </NodeField>
-      <Handle type="target" position={Position.Left} style={{ background: '#a855f7' }} />
+      <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '30%' }} title="Storey" />
+      <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '60%' }} title="Transform list" />
+      <Handle type="target" id="opening" position={Position.Left} style={{ background: '#64748b', top: '88%' }} title="Opening voids" />
     </BaseNode>
   );
 }

@@ -92,6 +92,32 @@ export interface SlabParams extends ElementAttributes {
   Openings?: RectangularOpening[];
 }
 
+/** Standalone opening element — a box placed in a storey (no host void relationship) */
+export interface OpeningParams extends ElementAttributes {
+  /** Placement origin (bottom-left corner of opening box) */
+  Position: Point3D;
+  /** Width (X dimension) */
+  Width: number;
+  /** Height (Z — vertical dimension) */
+  Height: number;
+  /** Depth (Y dimension — through-thickness direction) */
+  Depth: number;
+}
+
+/** IfcSpace: room / zone volume, extruded vertical profile */
+export interface SpaceParams extends ElementAttributes {
+  /** Placement origin (bottom-left corner) */
+  Position: Point3D;
+  /** Room height (Z extrusion) */
+  Height?: number;
+  /** Width (X dimension) — used when Profile is omitted */
+  Width?: number;
+  /** Depth (Y dimension) — used when Profile is omitted */
+  Depth?: number;
+  /** Custom floor plan outline (overrides Width/Depth) */
+  Profile?: Point2D[];
+}
+
 /** Column: extruded rectangle profile */
 export interface ColumnParams extends ElementAttributes {
   /** Base point */

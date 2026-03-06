@@ -4,6 +4,7 @@
 
 import type { Node, Edge } from '@xyflow/react';
 import { IfcCreator } from '@ifc-lite/create';
+import { NodeRegistry } from './registry';
 
 // ─── Node data shapes ──────────────────────────────────────────────────────
 
@@ -55,43 +56,63 @@ export interface SlabNodeData extends Record<string, unknown> {
   thickness: number;
 }
 
-// ─── Default data per node type ────────────────────────────────────────────
+export interface OpeningNodeData extends Record<string, unknown> {
+  name?: string;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  height: number;
+}
 
-export const DEFAULT_NODE_DATA: Record<string, Record<string, unknown>> = {
-  projectNode:  { name: 'My Building', siteName: 'Site', buildingName: 'Building' } satisfies ProjectNodeData,
-  storeyNode:   { name: 'Ground Floor', elevation: 0 } satisfies StoreyNodeData,
-  wallNode:     { startX: 0, startY: 0, length: 5, thickness: 0.2, height: 3 } satisfies WallNodeData,
-  columnNode:   { x: 0, y: 0, width: 0.3, depth: 0.3, height: 3 } satisfies ColumnNodeData,
-  beamNode:     { startX: 0, startY: 0, length: 5, width: 0.2, beamHeight: 0.4 } satisfies BeamNodeData,
-  slabNode:     { x: 0, y: 0, width: 10, depth: 8, thickness: 0.2 } satisfies SlabNodeData,
-};
+export interface RoomNodeData extends Record<string, unknown> {
+  name?: string;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  height: number;
+}
+
+export interface TransformNodeData extends Record<string, unknown> {
+  /**
+   * Semicolon- or newline-separated list of transform tuples.
+   * Format per entry: tx, ty, tz, rx°, ry°, rz°  (metres / degrees)
+   * Each entry produces ONE instance of the connected element at compile time.
+   * Example (3 columns at x = 0, 5, 10 m):
+   *   "0,0,0,0,0,0\n5,0,0,0,0,0\n10,0,0,0,0,0"
+   */
+  transforms: string;
+}
 
 // ─── Initial graph ──────────────────────────────────────────────────────────
+// Default data is inlined here so INITIAL_NODES has no runtime dependency on
+// the registry (which is populated lazily via side-effect imports).
 
 export const INITIAL_NODES: Node[] = [
   {
     id: 'project-1',
     type: 'projectNode',
     position: { x: 60, y: 180 },
-    data: DEFAULT_NODE_DATA.projectNode,
+    data: { name: 'My Building', siteName: 'Site', buildingName: 'Building' } satisfies ProjectNodeData,
   },
   {
     id: 'storey-1',
     type: 'storeyNode',
     position: { x: 360, y: 140 },
-    data: DEFAULT_NODE_DATA.storeyNode,
+    data: { name: 'Ground Floor', elevation: 0 } satisfies StoreyNodeData,
   },
   {
     id: 'wall-1',
     type: 'wallNode',
     position: { x: 640, y: 60 },
-    data: { ...DEFAULT_NODE_DATA.wallNode, name: 'South Wall' },
+    data: { name: 'South Wall', startX: 0, startY: 0, length: 5, thickness: 0.2, height: 3 } satisfies WallNodeData,
   },
   {
     id: 'column-1',
     type: 'columnNode',
     position: { x: 640, y: 280 },
-    data: { ...DEFAULT_NODE_DATA.columnNode, name: 'Corner Column' },
+    data: { name: 'Corner Column', x: 0, y: 0, width: 0.3, depth: 0.3, height: 3 } satisfies ColumnNodeData,
   },
 ];
 
@@ -103,7 +124,13 @@ export const INITIAL_EDGES: Edge[] = [
 
 // ─── Compile graph → IFC STEP text ─────────────────────────────────────────
 
-export function compileGraphToIfc(nodes: Node[], edges: Edge[]): string | null {
+/**
+ * Walks the graph (project → storeys → elements) and compiles to IFC STEP.
+ * Element node types dispatch to compile handlers registered via NodeRegistry.
+ * This function is async because some handlers (e.g. GraphML Builder) may
+ * need to fetch external resources.
+ */
+export async function compileGraphToIfc(nodes: Node[], edges: Edge[]): Promise<string | null> {
   const projectNode = nodes.find(n => n.type === 'projectNode');
   if (!projectNode) return null;
 
@@ -139,51 +166,14 @@ export function compileGraphToIfc(nodes: Node[], edges: Edge[]): string | null {
       .filter((n): n is Node => !!n);
 
     for (const elemNode of elemNodes) {
-      switch (elemNode.type) {
-        case 'wallNode': {
-          const d = elemNode.data as WallNodeData;
-          creator.addIfcWall(storeyId, {
-            Name: d.name || undefined,
-            Start: [d.startX ?? 0, d.startY ?? 0, 0],
-            End: [(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, 0],
-            Thickness: d.thickness ?? 0.2,
-            Height: d.height ?? 3,
-          });
-          break;
-        }
-        case 'columnNode': {
-          const d = elemNode.data as ColumnNodeData;
-          creator.addIfcColumn(storeyId, {
-            Name: d.name || undefined,
-            Position: [d.x ?? 0, d.y ?? 0, 0],
-            Width: d.width ?? 0.3,
-            Depth: d.depth ?? 0.3,
-            Height: d.height ?? 3,
-          });
-          break;
-        }
-        case 'beamNode': {
-          const d = elemNode.data as BeamNodeData;
-          creator.addIfcBeam(storeyId, {
-            Name: d.name || undefined,
-            Start: [d.startX ?? 0, d.startY ?? 0, 0],
-            End: [(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, 0],
-            Width: d.width ?? 0.2,
-            Height: d.beamHeight ?? 0.4,
-          });
-          break;
-        }
-        case 'slabNode': {
-          const d = elemNode.data as SlabNodeData;
-          creator.addIfcSlab(storeyId, {
-            Name: d.name || undefined,
-            Position: [d.x ?? 0, d.y ?? 0, 0],
-            Width: d.width ?? 10,
-            Depth: d.depth ?? 8,
-            Thickness: d.thickness ?? 0.2,
-          });
-          break;
-        }
+      const handler = NodeRegistry.getCompileHandler(elemNode.type ?? '');
+      if (handler) {
+        await handler(
+          elemNode.data as Record<string, unknown>,
+          storeyId,
+          creator,
+          { nodes, edges, nodeId: elemNode.id },
+        );
       }
     }
   }

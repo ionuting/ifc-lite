@@ -14,8 +14,8 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Connection,
-  type NodeTypes,
 } from '@xyflow/react';
 import {
   X,
@@ -24,12 +24,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Box,
-  Columns2,
-  Layers2,
-  LayoutList,
-  Minus,
-  Square,
   GripHorizontal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -37,41 +31,25 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { useViewerStore } from '@/store';
 import { useIfc } from '@/hooks/useIfc';
-import { ProjectNode } from './nodes/ProjectNode';
-import { StoreyNode } from './nodes/StoreyNode';
-import { WallNode } from './nodes/WallNode';
-import { ColumnNode } from './nodes/ColumnNode';
-import { BeamNode } from './nodes/BeamNode';
-import { SlabNode } from './nodes/SlabNode';
-import { INITIAL_NODES, INITIAL_EDGES, DEFAULT_NODE_DATA, compileGraphToIfc } from './nodes/types';
+import { NodeRegistry } from './nodes/registry';
+import { INITIAL_NODES, INITIAL_EDGES, compileGraphToIfc } from './nodes/types';
+// Side-effect imports — registers all node types into NodeRegistry:
+import './nodes/builtins';
+import './nodes/graphmlBuilderNode';
+import './nodes/fileInputNode';
+import './nodes/transformNode';
 
-// ─── Node type registry ────────────────────────────────────────────────────
-
-const NODE_TYPES: NodeTypes = {
-  projectNode: ProjectNode,
-  storeyNode: StoreyNode,
-  wallNode: WallNode,
-  columnNode: ColumnNode,
-  beamNode: BeamNode,
-  slabNode: SlabNode,
-};
-
-// ─── Sidebar palette items ─────────────────────────────────────────────────
-
-const PALETTE_ITEMS = [
-  { type: 'projectNode',  label: 'Project',  icon: Layers2,    color: 'text-indigo-500' },
-  { type: 'storeyNode',   label: 'Storey',   icon: LayoutList, color: 'text-purple-500' },
-  { type: 'wallNode',     label: 'Wall',     icon: Minus,      color: 'text-emerald-500' },
-  { type: 'columnNode',   label: 'Column',   icon: Columns2,   color: 'text-orange-500' },
-  { type: 'beamNode',     label: 'Beam',     icon: Box,        color: 'text-amber-500' },
-  { type: 'slabNode',     label: 'Slab',     icon: Square,     color: 'text-cyan-500' },
-] as const;
+// ─── Stable module-level registry snapshots ────────────────────────────────
+// Called once after all side-effect imports have run, so the registry is fully
+// populated before any component renders.
+const NODE_TYPES = NodeRegistry.getNodeTypes();
+const PALETTE_ITEMS = NodeRegistry.getPaletteItems();
+const DEFAULT_DATA  = NodeRegistry.getDefaultData();
 
 // ─── Compile status ────────────────────────────────────────────────────────
 
 type CompileStatus = 'idle' | 'compiling' | 'ok' | 'error';
 
-// ─── Inner panel (needs ReactFlowProvider context) ─────────────────────────
 
 interface NodeEditorPanelInnerProps {
   visible: boolean;
@@ -85,6 +63,7 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
   const [status, setStatus] = useState<CompileStatus>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flow = useReactFlow();
 
   // ── Floating window position & size ─────────────────────────────────────
   const [pos, setPos]   = useState({ x: 80, y: 80 });
@@ -140,6 +119,32 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
 
   const { loadFile } = useIfc();
   const setNodeEditorPanelVisible = useViewerStore((s) => s.setNodeEditorPanelVisible);
+  const toggleTypeVisibility = useViewerStore((s) => s.toggleTypeVisibility);
+  const typeVisibility = useViewerStore((s) => s.typeVisibility);
+
+  // ── Ctrl+D: duplicate selected nodes ───────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!visible) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key !== 'd') return;
+      e.preventDefault();
+      const selected = flow.getNodes().filter(n => n.selected);
+      if (!selected.length) return;
+      const stamp = Date.now();
+      setNodes(nds => [
+        ...nds.map(n => ({ ...n, selected: false })),
+        ...selected.map((n, i) => ({
+          ...n,
+          id: `${n.type ?? 'node'}-dup-${stamp}-${i}`,
+          position: { x: n.position.x + 30, y: n.position.y + 30 },
+          selected: true,
+          data: { ...n.data },
+        })),
+      ]);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [visible, flow, setNodes]);
 
   // ── Connect edges ───────────────────────────────────────────────────────
   const onConnect = useCallback(
@@ -155,7 +160,7 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
     setStatus('compiling');
     setStatusMsg('');
     try {
-      const content = compileGraphToIfc(nodes, edges);
+      const content = await compileGraphToIfc(nodes, edges);
       if (!content) {
         setStatus('error');
         setStatusMsg('Add a Project node first');
@@ -166,12 +171,17 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
       await loadFile(file);
       // loadFile resets store; restore node editor visibility
       setNodeEditorPanelVisible(true);
+      // Enable visibility for special types present in the graph
+      const hasSpaces = nodes.some(n => n.type === 'roomNode');
+      const hasOpenings = nodes.some(n => n.type === 'openingNode');
+      if (hasSpaces && !typeVisibility.spaces) toggleTypeVisibility('spaces');
+      if (hasOpenings && !typeVisibility.openings) toggleTypeVisibility('openings');
       setStatus('ok');
     } catch (err) {
       setStatus('error');
       setStatusMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [nodes, edges, loadFile, setNodeEditorPanelVisible]);
+  }, [nodes, edges, loadFile, setNodeEditorPanelVisible, toggleTypeVisibility, typeVisibility]);
 
   // ── Auto-compile with debounce ──────────────────────────────────────────
   useEffect(() => {
@@ -188,7 +198,7 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
     const y = 100 + Math.random() * 300;
     setNodes((nds) => [
       ...nds,
-      { id, type, position: { x, y }, data: { ...DEFAULT_NODE_DATA[type] } },
+      { id, type, position: { x, y }, data: { ...DEFAULT_DATA[type] } },
     ]);
   }, [setNodes]);
 
@@ -281,16 +291,23 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
           <p className="text-[10px] uppercase tracking-widest text-muted-foreground px-1 pb-1 select-none">
             Add node
           </p>
-          {PALETTE_ITEMS.map(({ type, label, icon: Icon, color }) => (
-            <button
-              key={type}
-              onClick={() => addNode(type)}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left"
-            >
-              <Icon className={cn('h-4 w-4 shrink-0', color)} />
-              <span>{label}</span>
-            </button>
-          ))}
+          {PALETTE_ITEMS.map((item) => {
+            const isEmoji = typeof item.icon === 'string';
+            const IconEl  = isEmoji ? null : item.icon as React.ElementType;
+            return (
+              <button
+                key={item.type}
+                onClick={() => addNode(item.type)}
+                className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent transition-colors text-left"
+              >
+                {isEmoji
+                  ? <span className="text-base leading-none">{item.icon as string}</span>
+                  : IconEl && <IconEl className={cn('h-4 w-4 shrink-0', item.iconColor)} />
+                }
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* ReactFlow canvas */}
@@ -303,7 +320,11 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
             onConnect={onConnect}
             nodeTypes={NODE_TYPES}
             fitView
-            deleteKeyCode="Backspace"
+            deleteKeyCode={['Backspace', 'Delete']}
+            multiSelectionKeyCode="Control"
+            selectionOnDrag
+            panOnDrag={[1, 2]}
+            panOnScroll
           >
             <Background />
             <Controls />

@@ -21,7 +21,7 @@
 import type {
   Point3D, Point2D, Placement3D, RectangularOpening,
   WallParams, SlabParams, ColumnParams, BeamParams, StairParams, RoofParams,
-  IfcElementClass, RawBrepParams,
+  IfcElementClass, RawBrepParams, OpeningParams, SpaceParams,
   ProjectParams, SiteParams, BuildingParams, StoreyParams,
   PropertySetDef, PropertyDef, QuantitySetDef, QuantityDef,
   MaterialDef, MaterialLayerDef,
@@ -506,6 +506,91 @@ export class IfcCreator {
 
     this.lines[record.lineIndex] = replacedPredefined;
     this.entities[record.entityIndex].type = ifcClass;
+  }
+
+  /**
+   * Create a standalone IfcOpeningElement (box placed in a storey).
+   * This is a visual placeholder — no IfcRelVoidsElement is created, so
+   * it does not cut host geometry. Use WallParams.Openings / SlabParams.Openings
+   * for actual void subtraction.
+   *
+   * Position is the bottom-left-front corner of the box.
+   * Width extends along +X, Depth along +Y, Height along +Z.
+   */
+  addIfcOpeningElement(storeyId: number, params: OpeningParams): number {
+    const placementId = this.addLocalPlacement(this.worldPlacementId, {
+      Location: params.Position,
+    });
+
+    const w = params.Width;
+    const d = params.Depth;
+    const h = params.Height;
+    // Profile centered in X/Y, extruded upward
+    const profileId = this.addRectangleProfile(w, d, [w / 2, d / 2]);
+    const solidId = this.addExtrudedAreaSolid(profileId, h);
+    const shapeId = this.addShapeRepresentation('Body', [solidId]);
+    const prodShapeId = this.addProductDefinitionShape([shapeId]);
+
+    const openingId = this.id();
+    const globalId = newGlobalId();
+    const name = params.Name ?? 'Opening';
+    const desc = params.Description ? `'${esc(params.Description)}'` : '$';
+    const objType = params.ObjectType ? `'${esc(params.ObjectType)}'` : '$';
+    const tag = params.Tag ? `'${esc(params.Tag)}'` : '$';
+
+    this.line(openingId, 'IFCOPENINGELEMENT',
+      `'${globalId}',#${this.ownerHistoryId},'${esc(name)}',${desc},${objType},#${placementId},#${prodShapeId},${tag},.OPENING.`);
+
+    this.elementSolids.set(openingId, [solidId]);
+    this.trackElement(storeyId, openingId);
+    this.entities.push({ expressId: openingId, type: 'IfcOpeningElement', Name: name });
+
+    return openingId;
+  }
+
+  /**
+   * Create an IfcSpace (room / zone).
+   *
+   * Geometry mirrors IfcSlab: a floor plan profile extruded along +Z by Height.
+   * Position is the minimum corner (bottom-left in plan).
+   * Default height: 2.65 m.
+   */
+  addIfcSpace(storeyId: number, params: SpaceParams): number {
+    const placementId = this.addLocalPlacement(this.worldPlacementId, {
+      Location: params.Position,
+    });
+
+    let profileId: number;
+    if (params.Profile && params.Profile.length >= 3) {
+      profileId = this.addArbitraryProfile(params.Profile);
+    } else {
+      const w = params.Width ?? 5;
+      const d = params.Depth ?? 5;
+      profileId = this.addRectangleProfile(w, d, [w / 2, d / 2]);
+    }
+
+    const h = params.Height ?? 2.65;
+    const solidId = this.addExtrudedAreaSolid(profileId, h);
+    const shapeId = this.addShapeRepresentation('Body', [solidId]);
+    const prodShapeId = this.addProductDefinitionShape([shapeId]);
+
+    const spaceId = this.id();
+    const globalId = newGlobalId();
+    const name = params.Name ?? 'Space';
+    const desc = params.Description ? `'${esc(params.Description)}'` : '$';
+    const objType = params.ObjectType ? `'${esc(params.ObjectType)}'` : '$';
+    const tag = params.Tag ? `'${esc(params.Tag)}'` : '$';
+
+    // IFC4 IFCSPACE: GlobalId, OwnerHistory, Name, Description, ObjectType,
+    //   ObjectPlacement, Representation, LongName, CompositionType, PredefinedType, ElevationWithFlooring
+    this.line(spaceId, 'IFCSPACE',
+      `'${globalId}',#${this.ownerHistoryId},'${esc(name)}',${desc},${objType},#${placementId},#${prodShapeId},${tag},.ELEMENT.,.INTERNAL.,$`);
+
+    this.elementSolids.set(spaceId, [solidId]);
+    this.trackElement(storeyId, spaceId);
+    this.entities.push({ expressId: spaceId, type: 'IfcSpace', Name: name });
+
+    return spaceId;
   }
 
   // ============================================================================

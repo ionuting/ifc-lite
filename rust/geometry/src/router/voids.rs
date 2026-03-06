@@ -372,9 +372,8 @@ impl GeometryRouter {
     /// 3. **Diagonal wall openings**: Uses AABB clipping without internal face generation
     ///    to avoid rotation artifacts.
     ///
-    /// **Important**: Internal face generation is disabled for all openings because it causes
-    /// visual artifacts (rotated faces, thin lines extending from models). The opening cutouts
-    /// are still geometrically correct - only the internal "reveal" faces are omitted.
+    /// **Note**: Reveal (jamb/sill/head) faces are generated for axis-aligned rectangular
+    /// openings.  Diagonal openings skip reveal face generation to avoid rotation artifacts.
     pub fn process_element_with_voids(
         &self,
         element: &DecodedEntity,
@@ -568,10 +567,8 @@ impl GeometryRouter {
                         // Internal faces for diagonal openings cause rotation artifacts
                         result = self.cut_rectangular_opening_no_faces(&result, final_min, final_max);
                     } else {
-                        // For axis-aligned openings, use AABB clipping (no internal faces)
-                        // Internal face generation is disabled for all openings because it causes
-                        // visual artifacts (rotated faces, thin lines). The opening cutout is still
-                        // geometrically correct - only the internal "reveal" faces are omitted.
+                        // For axis-aligned openings, use AABB clipping WITH reveal faces
+                        // (jambs, sill, head — internal cap faces on the wall thickness).
                         result = self.cut_rectangular_opening(&result, final_min, final_max, wall_min, wall_max);
                     }
                 }
@@ -734,22 +731,181 @@ impl GeometryRouter {
         (new_min, new_max)
     }
 
-    /// Cut a rectangular opening from a mesh using AABB clipping.
+    /// Cut a rectangular opening from a mesh using AABB clipping, then add reveal faces
+    /// (internal cap faces on the wall thickness around the opening — jambs, sill, head).
     ///
-    /// This method clips triangles against the opening bounding box using axis-aligned
-    /// clipping planes. Internal face generation is disabled because it causes visual
-    /// artifacts (rotated faces, thin lines extending from models).
+    /// `wall_min`/`wall_max` are the original wall mesh bounds BEFORE any cutting and
+    /// are used to determine the wall thickness direction and to clamp the reveal faces.
     pub(super) fn cut_rectangular_opening(
         &self,
         mesh: &Mesh,
         open_min: Point3<f64>,
         open_max: Point3<f64>,
-        _wall_min: Point3<f64>,
-        _wall_max: Point3<f64>,
+        wall_min: Point3<f64>,
+        wall_max: Point3<f64>,
     ) -> Mesh {
-        // Use the same implementation as cut_rectangular_opening_no_faces
-        // Internal faces are disabled for all openings to avoid artifacts
-        self.cut_rectangular_opening_no_faces(mesh, open_min, open_max)
+        let mut result = self.cut_rectangular_opening_no_faces(mesh, open_min, open_max);
+        self.generate_opening_reveal_faces(&mut result, open_min, open_max, wall_min, wall_max);
+        result
+    }
+
+    /// Generate the four reveal (jamb/sill/head) faces around a rectangular opening.
+    ///
+    /// Determines which axis is the "through" axis (wall thickness direction) by finding
+    /// the axis along which the opening fully spans the wall.  Then emits two quads on
+    /// each of the other two axes at `open_min[axis]` and `open_max[axis]`, clamped to
+    /// the actual wall bounds so faces never extend outside the wall geometry.
+    fn generate_opening_reveal_faces(
+        &self,
+        result: &mut Mesh,
+        open_min: Point3<f64>,
+        open_max: Point3<f64>,
+        wall_min: Point3<f64>,
+        wall_max: Point3<f64>,
+    ) {
+        const EPSILON: f64 = 1e-4;
+
+        let open_lo = [open_min.x, open_min.y, open_min.z];
+        let open_hi = [open_max.x, open_max.y, open_max.z];
+        let wall_lo = [wall_min.x, wall_min.y, wall_min.z];
+        let wall_hi = [wall_max.x, wall_max.y, wall_max.z];
+
+        // Find the axis along which the opening fully spans the wall (thickness direction).
+        let through_axis = match (0..3usize).find(|&a| {
+            open_lo[a] <= wall_lo[a] + EPSILON && open_hi[a] >= wall_hi[a] - EPSILON
+        }) {
+            Some(a) => a,
+            None => return, // Cannot determine thickness direction; skip reveal faces.
+        };
+
+        // Wall thickness bounds along the through axis.
+        let wall_through_min = wall_lo[through_axis];
+        let wall_through_max = wall_hi[through_axis];
+        if wall_through_max - wall_through_min < EPSILON {
+            return;
+        }
+
+        // The two cut axes are the non-through axes.
+        let cut_axes: [usize; 2] = if through_axis == 0 {
+            [1, 2]
+        } else if through_axis == 1 {
+            [0, 2]
+        } else {
+            [0, 1]
+        };
+
+        for (idx, &cut_axis) in cut_axes.iter().enumerate() {
+            let other_cut_axis = cut_axes[1 - idx];
+
+            // Third-axis extent = intersection of opening and wall in that axis.
+            let third_min = open_lo[other_cut_axis].max(wall_lo[other_cut_axis]);
+            let third_max = open_hi[other_cut_axis].min(wall_hi[other_cut_axis]);
+            if third_max - third_min < EPSILON {
+                continue;
+            }
+
+            // Min face (at open_lo[cut_axis]): only emit when inside wall bounds.
+            if open_lo[cut_axis] > wall_lo[cut_axis] + EPSILON
+                && open_lo[cut_axis] < wall_hi[cut_axis] - EPSILON
+            {
+                self.add_reveal_quad(
+                    result,
+                    cut_axis,
+                    open_lo[cut_axis],
+                    through_axis,
+                    wall_through_min,
+                    wall_through_max,
+                    other_cut_axis,
+                    third_min,
+                    third_max,
+                    1.0,
+                );
+            }
+
+            // Max face (at open_hi[cut_axis]): only emit when inside wall bounds.
+            if open_hi[cut_axis] > wall_lo[cut_axis] + EPSILON
+                && open_hi[cut_axis] < wall_hi[cut_axis] - EPSILON
+            {
+                self.add_reveal_quad(
+                    result,
+                    cut_axis,
+                    open_hi[cut_axis],
+                    through_axis,
+                    wall_through_min,
+                    wall_through_max,
+                    other_cut_axis,
+                    third_min,
+                    third_max,
+                    -1.0,
+                );
+            }
+        }
+    }
+
+    /// Emit a single reveal quad (two triangles) into `result`.
+    ///
+    /// The quad lies in the plane `position[cut_axis] = face_coord` and spans:
+    ///  - through_axis: `[through_min, through_max]`
+    ///  - third_axis:   `[third_min,   third_max]`
+    ///
+    /// `normal_sign = +1.0` produces a normal pointing in the +`cut_axis` direction;
+    /// `-1.0` points in the −`cut_axis` direction.
+    fn add_reveal_quad(
+        &self,
+        result: &mut Mesh,
+        cut_axis: usize,
+        face_coord: f64,
+        through_axis: usize,
+        through_min: f64,
+        through_max: f64,
+        third_axis: usize,
+        third_min: f64,
+        third_max: f64,
+        normal_sign: f64,
+    ) {
+        use nalgebra::Vector3;
+
+        // Build a Point3 from axis-indexed values.
+        let make_pt = |through_val: f64, third_val: f64| -> Point3<f64> {
+            let mut p = [0.0f64; 3];
+            p[cut_axis] = face_coord;
+            p[through_axis] = through_val;
+            p[third_axis] = third_val;
+            Point3::new(p[0], p[1], p[2])
+        };
+
+        let v0 = make_pt(through_min, third_min);
+        let v1 = make_pt(through_max, third_min);
+        let v2 = make_pt(through_min, third_max);
+        let v3 = make_pt(through_max, third_max);
+
+        let mut n_arr = [0.0f64; 3];
+        n_arr[cut_axis] = normal_sign;
+        let normal = Vector3::new(n_arr[0], n_arr[1], n_arr[2]);
+
+        // Winding order: the cross product (v1-v0)×(v3-v0) equals +cut_axis when
+        // (through_axis, third_axis, cut_axis) is a right-handed permutation of (0,1,2).
+        // We flip the winding when `normal_sign` is negative **or** the permutation is
+        // left-handed, but not both (XOR).
+        let is_right_handed = matches!(
+            (through_axis, third_axis, cut_axis),
+            (0, 1, 2) | (1, 2, 0) | (2, 0, 1)
+        );
+        let use_default_winding = (normal_sign > 0.0) == is_right_handed;
+
+        let base = result.vertex_count() as u32;
+        result.add_vertex(v0, normal);
+        result.add_vertex(v1, normal);
+        result.add_vertex(v2, normal);
+        result.add_vertex(v3, normal);
+
+        if use_default_winding {
+            result.add_triangle(base, base + 1, base + 3);
+            result.add_triangle(base, base + 3, base + 2);
+        } else {
+            result.add_triangle(base, base + 3, base + 1);
+            result.add_triangle(base, base + 2, base + 3);
+        }
     }
 
     /// Cut a rectangular opening using AABB clipping WITHOUT generating internal faces.

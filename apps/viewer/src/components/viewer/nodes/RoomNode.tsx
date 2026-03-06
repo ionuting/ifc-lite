@@ -4,16 +4,16 @@
 
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from '@xyflow/react';
 import { BaseNode, NodeField, NodeInput } from './BaseNode';
-import type { ColumnNodeData } from './types';
+import type { RoomNodeData } from './types';
 
-type ColumnFlowNode = Node<ColumnNodeData>;
+type RoomFlowNode = Node<RoomNodeData>;
 
-export function ColumnNode({ id, data, selected }: NodeProps<ColumnFlowNode>) {
+export function RoomNode({ id, data, selected }: NodeProps<RoomFlowNode>) {
   const { updateNodeData } = useReactFlow();
-  const upd = (patch: Partial<ColumnNodeData>) => updateNodeData(id, patch);
+  const upd = (patch: Partial<RoomNodeData>) => updateNodeData(id, patch);
 
   return (
-    <BaseNode title="IfcColumn" headerClass="bg-orange-500" selected={selected}>
+    <BaseNode title="IfcSpace" headerClass="bg-blue-600" selected={selected}>
       <NodeField label="Name">
         <NodeInput value={data.name ?? ''} onChange={v => upd({ name: String(v) || undefined })} placeholder="optional" />
       </NodeField>
@@ -24,13 +24,13 @@ export function ColumnNode({ id, data, selected }: NodeProps<ColumnFlowNode>) {
         <NodeInput type="number" value={data.y} onChange={v => upd({ y: Number(v) })} step={0.5} />
       </NodeField>
       <NodeField label="Width">
-        <NodeInput type="number" value={data.width} onChange={v => upd({ width: Number(v) })} step={0.05} />
+        <NodeInput type="number" value={data.width} onChange={v => upd({ width: Number(v) })} step={0.5} />
       </NodeField>
       <NodeField label="Depth">
-        <NodeInput type="number" value={data.depth} onChange={v => upd({ depth: Number(v) })} step={0.05} />
+        <NodeInput type="number" value={data.depth} onChange={v => upd({ depth: Number(v) })} step={0.5} />
       </NodeField>
       <NodeField label="Height">
-        <NodeInput type="number" value={data.height} onChange={v => upd({ height: Number(v) })} step={0.5} />
+        <NodeInput type="number" value={data.height} onChange={v => upd({ height: Number(v) })} step={0.1} />
       </NodeField>
       <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '35%' }} title="Storey" />
       <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '70%' }} title="Transform list" />

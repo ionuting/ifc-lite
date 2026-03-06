@@ -43,6 +43,8 @@ export type {
   RoofParams,
   IfcElementClass,
   RawBrepParams,
+  OpeningParams,
+  SpaceParams,
 
   // Properties & quantities
   PropertyType,
