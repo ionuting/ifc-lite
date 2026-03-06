@@ -174,8 +174,10 @@ export function ViewportContainer() {
 
   const hasGeometry = mergedGeometryResult?.meshes && mergedGeometryResult.meshes.length > 0;
 
-  // Check if any models are loaded (even if hidden) - used to show empty 3D vs starting UI
-  const hasLoadedModels = storeModels.size > 0 || (geometryResult?.meshes && geometryResult.meshes.length > 0);
+  // Check if any models are loaded (even if hidden) - used to show empty 3D vs starting UI.
+  // Also treat a parsed IFC data store as "loaded" so that a blank project (no visible geometry)
+  // keeps the viewer visible instead of reverting to the start screen.
+  const hasLoadedModels = storeModels.size > 0 || (geometryResult?.meshes && geometryResult.meshes.length > 0) || !!ifcDataStore;
 
   // PERF: Incremental geometry filtering using refs.
   // Instead of creating a new 200K+ element array every batch (~200ms),

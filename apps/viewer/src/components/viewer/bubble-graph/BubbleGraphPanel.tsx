@@ -28,7 +28,10 @@ import { newViewId } from '@/store/slices/viewsSlice';
 import type { ViewDefinition } from '@/store/slices/viewsSlice';
 import type { BubbleGraphNode, BubbleGraphEdge } from '@/store/slices/bubbleGraphSlice';
 import { getGeometriesByFamily } from './geometryResolver';
+import { generateIfcFromGraph } from './ifcGenerator';
 import nodeLibraryData from './nodeLibrary.json';
+import { useIfc } from '@/hooks/useIfc';
+import { toast } from '@/components/ui/toast';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -190,7 +193,7 @@ function PropertiesPanel({
   const smartKeys = new Set([
     'has_column', 'column_type', 'has_beam', 'beam_type',
     'wall_type', 'slab_type', 'material',
-    'bottomElevation', 'topElevation', 'axesX', 'axesY', 'width', 'height',
+    'bottomElevation', 'topElevation', 'axesX', 'axesY', 'width', 'height', 'depth', 'sill_height',
   ]);
 
   return (
@@ -385,6 +388,38 @@ function PropertiesPanel({
         </div>
       )}
 
+      {/* Window / Door properties */}
+      {(node.type === 'window' || node.type === 'door') && (
+        <div className="border-b border-border p-3 space-y-2">
+          <div className="font-semibold text-xs uppercase tracking-wider text-muted-foreground">
+            {node.type === 'window' ? 'Window' : 'Door'}
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 items-center">
+            <span className="text-muted-foreground">Width (mm)</span>
+            <input
+              type="number"
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.width as number) ?? (node.type === 'window' ? 1000 : 900)}
+              onChange={(e) => onUpdateProp('width', parseFloat(e.target.value))}
+            />
+            <span className="text-muted-foreground">Height (mm)</span>
+            <input
+              type="number"
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.height as number) ?? (node.type === 'window' ? 1200 : 2100)}
+              onChange={(e) => onUpdateProp('height', parseFloat(e.target.value))}
+            />
+            <span className="text-muted-foreground">Sill (mm)</span>
+            <input
+              type="number"
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.sill_height as number) ?? (node.type === 'window' ? 900 : 0)}
+              onChange={(e) => onUpdateProp('sill_height', parseFloat(e.target.value))}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Other custom properties */}
       <div className="p-3 space-y-2 flex-1">
         <div className="flex items-center justify-between">
@@ -521,6 +556,18 @@ function BubbleGraphCanvas({ nodes, edges, setNodes, setEdges }: BubbleGraphCanv
   const [floatDragOff, setFloatDragOff] = useState({ x: 0, y: 0 });
 
   const setBubbleGraph = useViewerStore((s) => s.setBubbleGraph);
+  const { loadFile } = useIfc();
+  const [projectName, setProjectName] = useState('My Building');
+
+  const handleGenerateIfc = useCallback(async () => {
+    try {
+      const file = generateIfcFromGraph(nodes, edges, projectName);
+      await loadFile(file);
+      toast.success(`IFC generated: ${file.name}`);
+    } catch (err) {
+      toast.error(`IFC generation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [nodes, edges, projectName, loadFile]);
 
   // Sync to store when nodes/edges change
   useEffect(() => {
@@ -1095,6 +1142,20 @@ function BubbleGraphCanvas({ nodes, edges, setNodes, setEdges }: BubbleGraphCanv
         <button className="text-xs px-2 py-1 rounded hover:bg-accent" onClick={() => fileInputRef.current?.click()}>⬇ Import GraphML</button>
         <div className="w-px h-4 bg-border mx-1" />
         <button className="text-xs px-2 py-1 rounded hover:bg-accent" onClick={() => setShowAxesDialog(true)}>⊞ New Storey</button>
+        <div className="w-px h-4 bg-border mx-1" />
+        <input
+          className="text-xs bg-background border border-border rounded px-2 py-0.5 w-32"
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+          placeholder="Project name"
+          title="IFC project name for generation"
+        />
+        <button
+          className="text-xs px-2 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+          onClick={handleGenerateIfc}
+        >
+          ⚙ Generate IFC
+        </button>
         <div className="w-px h-4 bg-border mx-1" />
         <button className="text-xs px-2 py-1 rounded hover:bg-accent" onClick={() => setZoom((z) => Math.min(5, z * 1.2))}>＋</button>
         <button className="text-xs px-2 py-1 rounded hover:bg-accent" onClick={() => setZoom((z) => Math.max(0.1, z * 0.8))}>－</button>

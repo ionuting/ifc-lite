@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Renderer, type VisualEnhancementOptions } from '@ifc-lite/renderer';
 import type { MeshData, CoordinateInfo } from '@ifc-lite/geometry';
 import { useViewerStore, resolveEntityRef, type MeasurePoint, type SnapVisualization } from '@/store';
+import { IfcCreator, type IfcElementClass } from '@ifc-lite/create';
 import {
   useSelectionState,
   useVisibilityState,
@@ -422,7 +423,7 @@ export function Viewport({ geometry, geometryVersion, coordinateInfo, computedIs
     }
 
     // Set cursor based on active tool
-    if (activeTool === 'measure') {
+    if (activeTool === 'measure' || activeTool === 'draw-rect') {
       canvas.style.cursor = 'crosshair';
     } else if (activeTool === 'pan' || activeTool === 'orbit') {
       canvas.style.cursor = 'grab';
@@ -677,6 +678,139 @@ export function Viewport({ geometry, geometryVersion, coordinateInfo, computedIs
   // Sync on every render since mouseState is mutated directly by event handlers
   mouseIsDraggingRef.current = mouseStateRef.current.isDragging;
 
+  // ===== Draw-rect tool state =====
+  const drawRectIfcType = useViewerStore((s) => s.drawRectIfcType);
+  const drawRectIsWire = useViewerStore((s) => s.drawRectIsWire);
+  const drawRectExtrusionHeight = useViewerStore((s) => s.drawRectExtrusionHeight);
+  const setDrawRectScreenStart = useViewerStore((s) => s.setDrawRectScreenStart);
+  const setDrawRectScreenCurrent = useViewerStore((s) => s.setDrawRectScreenCurrent);
+  const drawRectScreenStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Get the Y-axis workplane elevation: active view's baseElevation, else 0
+  // (activeViewId and views are already declared above for rotationLockedRef)
+  const drawRectWorkplaneYRef = useRef<number>(0);
+  useEffect(() => {
+    if (activeViewId) {
+      const view = views.get(activeViewId);
+      drawRectWorkplaneYRef.current = view?.baseElevation ?? 0;
+    } else {
+      drawRectWorkplaneYRef.current = 0;
+    }
+  }, [activeViewId, views]);
+
+  // Stable refs to avoid stale closure in onDrawRectCommit
+  const drawRectIfcTypeRef = useRef(drawRectIfcType);
+  const drawRectIsWireRef = useRef(drawRectIsWire);
+  const drawRectExtrusionHeightRef = useRef(drawRectExtrusionHeight);
+  useEffect(() => { drawRectIfcTypeRef.current = drawRectIfcType; }, [drawRectIfcType]);
+  useEffect(() => { drawRectIsWireRef.current = drawRectIsWire; }, [drawRectIsWire]);
+  useEffect(() => { drawRectExtrusionHeightRef.current = drawRectExtrusionHeight; }, [drawRectExtrusionHeight]);
+
+  /**
+   * Convert a viewer screen position to IFC Z-up coordinates, accounting for
+   * the active model's coordinate shift (originShift + wasmRtcOffset).
+   *
+   * The ray is intersected with the horizontal workplane Y = planeY (viewer Y-up).
+   * Returns null if the ray is near-parallel to the plane.
+   */
+  const screenToIfcCoords = useCallback((
+    screenX: number,
+    screenY: number,
+    planeY: number,
+  ): [number, number, number] | null => {
+    const renderer = rendererRef.current;
+    const canvas = canvasRef.current;
+    if (!renderer || !canvas) return null;
+
+    const camera = renderer.getCamera();
+    const { origin, direction } = camera.unprojectToRay(screenX, screenY, canvas.width, canvas.height);
+
+    if (Math.abs(direction.y) < 1e-6) return null;
+    const t = (planeY - origin.y) / direction.y;
+    if (t < 0) return null;
+
+    const wx = origin.x + direction.x * t;
+    const wy = planeY;
+    const wz = origin.z + direction.z * t;
+
+    // Convert viewer Y-up → IFC Z-up, accounting for model coordinate offsets
+    const shift = coordinateInfo?.originShift ?? { x: 0, y: 0, z: 0 };
+    const rtc = coordinateInfo?.wasmRtcOffset;
+
+    const rawX = wx + shift.x;
+    const rawY = wy + shift.y;
+    const rawZ = wz + shift.z;
+
+    const ifcX = rawX + (rtc?.x ?? 0);
+    const ifcY = -rawZ + (rtc?.y ?? 0); // viewer Z → -IFC Y
+    const ifcZ = rawY + (rtc?.z ?? 0);  // viewer Y (up) → IFC Z (up)
+
+    return [ifcX, ifcY, ifcZ];
+  }, [coordinateInfo]);
+
+  /** Commit a drawn rectangle as a new standalone IFC element and load it. */
+  const onDrawRectCommit = useCallback((
+    screenStart: { x: number; y: number },
+    screenEnd: { x: number; y: number },
+  ) => {
+    const planeY = drawRectWorkplaneYRef.current;
+    const p1 = screenToIfcCoords(screenStart.x, screenStart.y, planeY);
+    const p2 = screenToIfcCoords(screenEnd.x, screenEnd.y, planeY);
+    if (!p1 || !p2) return;
+
+    const [x1, y1, z1] = p1;
+    const [x2, y2] = p2;
+
+    const minX = Math.min(x1, x2);
+    const minY = Math.min(y1, y2);
+    const width = Math.abs(x2 - x1);
+    const depth = Math.abs(y2 - y1);
+
+    if (width < 1e-4 || depth < 1e-4) return; // degenerate
+
+    const ifcType = drawRectIfcTypeRef.current as IfcElementClass;
+    const isWire = drawRectIsWireRef.current;
+    const extH = drawRectExtrusionHeightRef.current;
+    const H = isWire ? 0.02 : extH; // wire = 2cm flat slab
+
+    const creator = new IfcCreator({ Name: 'ifc-lite-draw' });
+    const storeyId = creator.addIfcBuildingStorey({
+      Name: 'Storey 1',
+      Elevation: z1,
+    });
+
+    // Build a box as a raw BREP so any IfcElementClass can be used.
+    // Vertices in local space (relative to position corner):
+    //   0-3 bottom face (z=0), 4-7 top face (z=H)
+    const vertices: [number, number, number][] = [
+      [0, 0, 0], [width, 0, 0], [width, depth, 0], [0, depth, 0],
+      [0, 0, H], [width, 0, H], [width, depth, H], [0, depth, H],
+    ];
+    const faces: number[][] = [
+      [0, 3, 2, 1],   // bottom (z=0, CCW from below)
+      [4, 5, 6, 7],   // top    (z=H, CCW from above)
+      [0, 1, 5, 4],   // front  (y=0)
+      [1, 2, 6, 5],   // right  (x=W)
+      [2, 3, 7, 6],   // back   (y=D)
+      [3, 0, 4, 7],   // left   (x=0)
+    ];
+
+    creator.addIfcRawBrep(storeyId, {
+      Position: [minX, minY, z1],
+      Vertices: vertices,
+      Faces: faces,
+      IfcClass: ifcType,
+      Name: `RectDraw-${ifcType}`,
+    });
+
+    const result = creator.toIfc();
+    window.dispatchEvent(
+      new CustomEvent('ifc-lite:load-file', {
+        detail: new File([result.content], 'rect-draw.ifc', { type: 'application/x-step' }),
+      }),
+    );
+  }, [screenToIfcCoords]);
+
   // ===== Extracted hooks =====
   useMouseControls({
     canvasRef,
@@ -735,6 +869,10 @@ export function Viewport({ geometry, geometryVersion, coordinateInfo, computedIs
     RENDER_THROTTLE_MS_LARGE,
     RENDER_THROTTLE_MS_HUGE,
     rotationLockedRef,
+    drawRectScreenStartRef,
+    setDrawRectScreenStart,
+    setDrawRectScreenCurrent,
+    onDrawRectCommit,
   });
 
   useTouchControls({

@@ -111,6 +111,12 @@ export interface UseMouseControlsParams {
   getPickOptions: () => { isStreaming: boolean; hiddenIds: Set<number>; isolatedIds: Set<number> | null };
   hasPendingMeasurements: () => boolean;
 
+  // Draw-rect tool params
+  drawRectScreenStartRef: MutableRefObject<{ x: number; y: number } | null>;
+  setDrawRectScreenStart: (p: { x: number; y: number } | null) => void;
+  setDrawRectScreenCurrent: (p: { x: number; y: number } | null) => void;
+  onDrawRectCommit: (screenStart: { x: number; y: number }, screenEnd: { x: number; y: number }) => void;
+
   // Constants
   HOVER_SNAP_THROTTLE_MS: number;
   SLOW_RAYCAST_THRESHOLD_MS: number;
@@ -225,6 +231,10 @@ export function useMouseControls(params: UseMouseControlsParams): void {
     calculateScale,
     getPickOptions,
     hasPendingMeasurements,
+    drawRectScreenStartRef,
+    setDrawRectScreenStart,
+    setDrawRectScreenCurrent,
+    onDrawRectCommit,
     HOVER_SNAP_THROTTLE_MS,
     SLOW_RAYCAST_THRESHOLD_MS,
     hoverThrottleMs,
@@ -329,7 +339,7 @@ export function useMouseControls(params: UseMouseControlsParams): void {
 
       // Set orbit pivot to what user clicks on (standard CAD/BIM behavior)
       // Simple and predictable: orbit around clicked geometry, or model center if empty space
-      if (willOrbit && tool !== 'measure' && tool !== 'walk') {
+      if (willOrbit && tool !== 'measure' && tool !== 'walk' && tool !== 'draw-rect') {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -360,6 +370,19 @@ export function useMouseControls(params: UseMouseControlsParams): void {
         // Select tool: shift+drag = pan, normal drag = orbit
         mouseState.isPanning = e.shiftKey;
         canvas.style.cursor = e.shiftKey ? 'move' : 'grabbing';
+      } else if (tool === 'draw-rect') {
+        // Draw-rect tool: start drawing a rectangle from this cursor position
+        if (e.button === 0) {
+          mouseState.isDragging = false; // don't orbit
+          canvas.style.cursor = 'crosshair';
+          const rect = canvas.getBoundingClientRect();
+          const sx = e.clientX - rect.left;
+          const sy = e.clientY - rect.top;
+          drawRectScreenStartRef.current = { x: sx, y: sy };
+          setDrawRectScreenStart({ x: sx, y: sy });
+          setDrawRectScreenCurrent({ x: sx, y: sy });
+        }
+        return;
       } else if (tool === 'measure') {
         // Measure tool - shift+drag = orbit, normal drag = measure
         if (e.shiftKey) {
@@ -466,6 +489,12 @@ export function useMouseControls(params: UseMouseControlsParams): void {
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       const tool = activeToolRef.current;
+
+      // Handle draw-rect tool live preview
+      if (tool === 'draw-rect' && drawRectScreenStartRef.current) {
+        setDrawRectScreenCurrent({ x, y });
+        return;
+      }
 
       // Handle measure tool live preview while dragging
       // IMPORTANT: Check tool first, not activeMeasurement, to prevent orbit conflict
@@ -776,6 +805,25 @@ export function useMouseControls(params: UseMouseControlsParams): void {
     const handleMouseUp = (e: MouseEvent) => {
       const tool = activeToolRef.current;
 
+      // Handle draw-rect tool commit
+      if (tool === 'draw-rect' && drawRectScreenStartRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const start = drawRectScreenStartRef.current;
+        const w = Math.abs(sx - start.x);
+        const h = Math.abs(sy - start.y);
+        // Only commit if the rectangle has meaningful size (> 5px in each dimension)
+        if (w > 5 && h > 5) {
+          onDrawRectCommit(start, { x: sx, y: sy });
+        }
+        drawRectScreenStartRef.current = null;
+        setDrawRectScreenStart(null);
+        setDrawRectScreenCurrent(null);
+        canvas.style.cursor = 'crosshair';
+        return;
+      }
+
       // Handle measure tool completion
       if (tool === 'measure' && activeMeasurementRef.current) {
         // Cancel any pending raycast to avoid stale updates
@@ -871,8 +919,14 @@ export function useMouseControls(params: UseMouseControlsParams): void {
       mouseState.isPanning = false;
       camera.stopInertia();
       camera.setOrbitPivot(null);
+      // Cancel any in-progress draw-rect
+      if (drawRectScreenStartRef.current) {
+        drawRectScreenStartRef.current = null;
+        setDrawRectScreenStart(null);
+        setDrawRectScreenCurrent(null);
+      }
       // Restore cursor based on active tool
-      if (tool === 'measure') {
+      if (tool === 'measure' || tool === 'draw-rect') {
         canvas.style.cursor = 'crosshair';
       } else if (tool === 'pan' || tool === 'orbit') {
         canvas.style.cursor = 'grab';
