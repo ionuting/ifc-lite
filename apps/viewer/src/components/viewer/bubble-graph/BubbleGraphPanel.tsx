@@ -945,6 +945,8 @@ function BubbleGraphCanvas({ nodes, edges, activeStoreyId, buildingAxes, setNode
         name: `${nt?.label ?? selectedNodeType}${nodes.filter((n) => n.type === selectedNodeType).length + 1}`,
         x: nx, y: ny, z: 0,
         properties: { ...(nt?.defaultProperties ?? {}) },
+        // Associate with the active storey so it shows in the correct tab
+        parentId: activeStoreyId ?? undefined,
       };
       setNodes((prev) => [...prev, newNode]);
       if (!continuousMode) setMode('select');
@@ -957,7 +959,8 @@ function BubbleGraphCanvas({ nodes, edges, activeStoreyId, buildingAxes, setNode
         if (!edgeStart) {
           setEdgeStart(hit.id);
         } else if (edgeStart !== hit.id) {
-          const startN = nodes.find((n) => n.id === edgeStart)!;
+          // Use visibleNodes to avoid finding the wrong node when duplicate IDs exist
+          const startN = visibleNodes.find((n) => n.id === edgeStart)!;
           const endN = hit;
           if (edgeType === 'simple') {
             setEdges((prev) => [...prev, { id: `edge_${uid()}`, from: edgeStart, to: endN.id }]);
@@ -1557,12 +1560,12 @@ export function BubbleGraphPanel({ visible, onClose }: BubbleGraphPanelProps) {
       properties: { bottomElevation: bottomElev, topElevation: topElev, axesX: xs, axesY: ys, width: maxX, height: maxY, discipline },
       locked: true,
     }];
-    // Generate ax nodes with deterministic IDs based on grid indices
-    // ax_grid_0_0 is the same node at any storey (same X-Y position globally)
+    // Generate ax nodes with storey-specific IDs but global grid coordinates
+    // gridX/gridY properties map to buildingAxes for IFC coordinate resolution
     for (let i = 0; i < ys.length; i++) {
       for (let j = 0; j < xs.length; j++) {
         newNodes.push({
-          id: `ax_grid_${j}_${i}`,  // Deterministic ID: same at every storey
+          id: `ax_${storeyId}_${j}_${i}`,  // Storey-specific ID, no duplicates
           type: 'ax',
           name: `${j + 1}-${String.fromCharCode(65 + i)}`,
           x: cx + (xs[j] - maxX / 2),
