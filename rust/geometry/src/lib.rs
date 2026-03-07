@@ -74,6 +74,7 @@ pub mod extrusion;
 pub mod mesh;
 pub mod processors;
 pub mod profile;
+pub mod profile_extractor;
 pub mod profiles;
 pub mod router;
 pub mod transform;
@@ -92,6 +93,7 @@ pub use csg::{calculate_normals, ClippingProcessor, Plane, Triangle};
 pub use error::{Error, Result};
 pub use extrusion::{extrude_profile, extrude_profile_with_voids};
 pub use mesh::{CoordinateShift, Mesh, SubMesh, SubMeshCollection};
+pub use profile_extractor::{extract_profiles, ExtractedProfile};
 pub use processors::{
     AdvancedBrepProcessor, BooleanClippingProcessor, ExtrudedAreaSolidProcessor,
     FaceBasedSurfaceModelProcessor, FacetedBrepProcessor, MappedItemProcessor,

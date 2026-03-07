@@ -21,6 +21,7 @@ import {
   type Drawing2D,
   type DrawingLine,
   type SectionConfig,
+  type ProfileEntry,
 } from '@ifc-lite/drawing-2d';
 import { GeometryProcessor, type GeometryResult } from '@ifc-lite/geometry';
 
@@ -74,6 +75,13 @@ export function useDrawingGeneration({
   // Track if this is a regeneration (vs initial generation)
   const isRegeneratingRef = useRef(false);
 
+  // Cache for extracted profiles - these don't change with section position
+  // Only re-extract when model changes
+  const profilesCacheRef = useRef<{
+    profiles: ProfileEntry[];
+    sourceId: string | null;
+  } | null>(null);
+
   // Cache for symbolic representations - these don't change with section position
   // Only re-parse when model or display options change
   const symbolicCacheRef = useRef<{
@@ -104,6 +112,7 @@ export function useDrawingGeneration({
     // OPTIMIZATION: Cache symbolic data - it doesn't change with section position
     let symbolicLines: DrawingLine[] = [];
     let entitiesWithSymbols = new Set<number>();
+    let extractedProfiles: ProfileEntry[] = [];
 
     // For multi-model: create cache key from model count and visible model IDs
     // For single-model: use source byteLength as before
@@ -240,6 +249,47 @@ export function useDrawingGeneration({
       }
     }
 
+    // Extract profiles for clean 2D projection silhouettes
+    if (ifcDataStore?.source) {
+      const profileCache = profilesCacheRef.current;
+      if (profileCache && profileCache.sourceId === modelCacheKey) {
+        extractedProfiles = profileCache.profiles;
+      } else {
+        try {
+          const processor = new GeometryProcessor();
+          try {
+            await processor.init();
+            const collection = processor.extractProfiles(ifcDataStore.source);
+            if (collection) {
+              const profiles: ProfileEntry[] = [];
+              for (let i = 0; i < collection.length; i++) {
+                const e = collection.get(i);
+                if (!e) continue;
+                profiles.push({
+                  expressId: e.expressId,
+                  ifcType: e.ifcType,
+                  outerPoints: e.outerPoints,
+                  holeCounts: e.holeCounts,
+                  holePoints: e.holePoints,
+                  transform: e.transform,
+                  extrusionDir: e.extrusionDir,
+                  extrusionDepth: e.extrusionDepth,
+                  modelIndex: e.modelIndex,
+                });
+              }
+              extractedProfiles = profiles;
+              profilesCacheRef.current = { profiles, sourceId: modelCacheKey };
+            }
+          } finally {
+            processor.dispose();
+          }
+        } catch (err) {
+          console.warn('Profile extraction failed:', err);
+          extractedProfiles = [];
+        }
+      }
+    }
+
     let generator: Drawing2DGenerator | null = null;
     try {
       generator = new Drawing2DGenerator();
@@ -309,12 +359,12 @@ export function useDrawingGeneration({
       }
 
       const result = await generator.generate(meshesToProcess, config, {
-        includeHiddenLines: false,  // Disable - causes internal mesh edges
-        includeProjection: false,   // Disable - causes triangulation lines
-        includeEdges: false,        // Disable - causes triangulation lines
+        includeHiddenLines: false,
+        includeProjection: extractedProfiles.length > 0,
+        includeEdges: false,
         mergeLines: true,
         onProgress: progressCallback,
-      });
+      }, extractedProfiles.length > 0 ? extractedProfiles : undefined);
 
       // If we have symbolic representations, create a hybrid drawing
       if (symbolicLines.length > 0 && entitiesWithSymbols.size > 0) {

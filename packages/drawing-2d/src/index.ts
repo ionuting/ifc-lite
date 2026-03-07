@@ -53,6 +53,9 @@ export type {
   // Edge data
   EdgeData,
 
+  // Profile extraction
+  ProfileEntry,
+
   // Utility types
   EntityKey,
 } from './types';
@@ -89,6 +92,12 @@ export type { LineMergerOptions } from './line-merger';
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { EdgeExtractor, getViewDirection } from './edge-extractor';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROFILE PROJECTION (clean silhouettes from WASM profiles)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export { projectProfiles } from './profile-projector';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HIDDEN LINE REMOVAL
