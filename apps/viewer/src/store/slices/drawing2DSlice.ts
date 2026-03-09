@@ -16,7 +16,29 @@ import { BUILT_IN_PRESETS } from '@ifc-lite/drawing-2d';
 export type Drawing2DStatus = 'idle' | 'generating' | 'ready' | 'error';
 
 /** Active 2D annotation tool */
-export type Annotation2DTool = 'none' | 'measure' | 'polygon-area' | 'text' | 'cloud';
+export type Annotation2DTool = 'none' | 'measure' | 'polygon-area' | 'text' | 'cloud' | 'select-element';
+
+/** Active 2D drawing/modeling tool (shapes on top of the drawing) */
+export type DrawingTool2D = 'none' | 'line' | 'polyline' | 'rectangle' | 'circle' | 'arc';
+
+/** A drawn shape placed on top of the 2D drawing */
+export interface DrawnShape2D {
+  id: string;
+  /** Shape type determines how `points` are interpreted */
+  type: 'line' | 'polyline' | 'rectangle' | 'circle' | 'arc';
+  /**
+   * Key points (drawing coords):
+   * - line:      [start, end]
+   * - polyline:  [p0, p1, ..., pN]
+   * - rectangle: [corner, oppositeCorner]
+   * - circle:    [center, edgePoint]  (radius = distance between them)
+   * - arc:       [center, startPoint, endPoint]
+   */
+  points: Point2D[];
+  strokeColor: string;   // hex, e.g. '#1d4ed8'
+  strokeWidth: number;   // in drawing units (metres), e.g. 0.01 = 1 cm line weight
+  fillColor: string | null;
+}
 
 /** Point in 2D drawing coordinates */
 export interface Point2D {
@@ -146,6 +168,42 @@ export interface Drawing2DState {
   // Selection
   /** Currently selected annotation (null = none) */
   selectedAnnotation2D: SelectedAnnotation2D | null;
+
+  // Element selection (select-element tool)
+  /** Express ID of the currently selected drawing element (null = none) */
+  selectedDrawingEntityId: number | null;
+  /** IFC type of the currently selected element */
+  selectedDrawingEntityIfcType: string | null;
+  /** Multi-selection: set of entity IDs selected for boolean/merge ops */
+  selectedDrawingEntityIds: number[];
+
+  // Boolean operation result (ephemeral SVG overlay)
+  /** SVG path string from last boolean operation (null = not active) */
+  booleanResultSvgPath: string | null;
+  /** Label for the current boolean result (e.g. 'Union', 'Difference') */
+  booleanResultLabel: string | null;
+
+  // ── Drawn Shapes (user-placed geometry on top of the drawing) ──────────────
+  /** Placed drawn shapes */
+  drawnShapes2D: DrawnShape2D[];
+  /** Currently active drawing/modeling tool */
+  activeDrawingTool: DrawingTool2D;
+  /** ID of the shape currently selected for editing / properties */
+  selectedShapeId: string | null;
+  /** Points accumulated so far for the in-progress shape */
+  inProgressPoints: Point2D[];
+  /** Live preview end-point (cursor position) for in-progress shape */
+  inProgressCursor: Point2D | null;
+  /** Default style applied to new drawn shapes */
+  drawingShapeStyle: {
+    strokeColor: string;
+    strokeWidth: number;
+    fillColor: string | null;
+  };
+
+  // ── Properties Panel ────────────────────────────────────────────────────────
+  /** Whether the 2D properties panel is open */
+  properties2DPanelVisible: boolean;
 }
 
 export interface Drawing2DSlice extends Drawing2DState {
@@ -224,6 +282,35 @@ export interface Drawing2DSlice extends Drawing2DState {
   /** Move an annotation to a new origin position (used during drag) */
   moveAnnotation2D: (sel: SelectedAnnotation2D, newOrigin: Point2D) => void;
 
+  // Element Selection Actions
+  /** Set the selected drawing entity by express ID and IFC type */
+  setSelectedDrawingEntity: (id: number | null, ifcType?: string | null) => void;
+  /** Add an entity to the multi-selection set */
+  addToDrawingEntitySelection: (id: number, ifcType?: string) => void;
+  /** Remove an entity from the multi-selection set */
+  removeFromDrawingEntitySelection: (id: number) => void;
+  /** Clear all selected drawing entities */
+  clearDrawingEntitySelection: () => void;
+  /** Store a boolean operation result as an SVG path overlay */
+  setBooleanResult: (svgPath: string | null, label?: string | null) => void;
+
+  // Drawn Shapes Actions
+  addDrawnShape2D: (shape: DrawnShape2D) => void;
+  updateDrawnShape2D: (id: string, updates: Partial<DrawnShape2D>) => void;
+  removeDrawnShape2D: (id: string) => void;
+  clearDrawnShapes2D: () => void;
+  setActiveDrawingTool: (tool: DrawingTool2D) => void;
+  setSelectedShapeId: (id: string | null) => void;
+  addInProgressPoint: (point: Point2D) => void;
+  setInProgressCursor: (point: Point2D | null) => void;
+  commitInProgressShape: () => void;
+  cancelInProgressShape: () => void;
+  updateDrawingShapeStyle: (style: Partial<Drawing2DState['drawingShapeStyle']>) => void;
+
+  // Properties Panel
+  setProperties2DPanelVisible: (visible: boolean) => void;
+  toggleProperties2DPanel: () => void;
+
   // Bulk Actions
   /** Clear all annotations (measurements, polygons, text, clouds) */
   clearAllAnnotations2D: () => void;
@@ -273,6 +360,26 @@ const getDefaultState = (): Drawing2DState => ({
   cloudAnnotations2D: [],
   // Selection
   selectedAnnotation2D: null,
+  // Element selection
+  selectedDrawingEntityId: null,
+  selectedDrawingEntityIfcType: null,
+  selectedDrawingEntityIds: [],
+  // Boolean operation result
+  booleanResultSvgPath: null,
+  booleanResultLabel: null,
+  // Drawn shapes
+  drawnShapes2D: [],
+  activeDrawingTool: 'none',
+  selectedShapeId: null,
+  inProgressPoints: [],
+  inProgressCursor: null,
+  drawingShapeStyle: {
+    strokeColor: '#1d4ed8',
+    strokeWidth: 0.01,
+    fillColor: null,
+  },
+  // Properties panel
+  properties2DPanelVisible: false,
 });
 
 export const createDrawing2DSlice: StateCreator<Drawing2DSlice, [], [], Drawing2DSlice> = (set, get) => ({
@@ -579,6 +686,98 @@ export const createDrawing2DSlice: StateCreator<Drawing2DSlice, [], [], Drawing2
   // Selection Actions
   setSelectedAnnotation2D: (sel) => set({ selectedAnnotation2D: sel }),
 
+  // Element Selection Actions
+  setSelectedDrawingEntity: (id, ifcType = null) => set({
+    selectedDrawingEntityId: id,
+    selectedDrawingEntityIfcType: ifcType ?? null,
+    selectedDrawingEntityIds: id !== null ? [id] : [],
+  }),
+
+  addToDrawingEntitySelection: (id, ifcType) => set((state) => ({
+    selectedDrawingEntityId: id,
+    selectedDrawingEntityIfcType: ifcType ?? state.selectedDrawingEntityIfcType,
+    selectedDrawingEntityIds: [...new Set([...state.selectedDrawingEntityIds, id])],
+  })),
+
+  removeFromDrawingEntitySelection: (id) => set((state) => {
+    const ids = state.selectedDrawingEntityIds.filter((eid) => eid !== id);
+    return {
+      selectedDrawingEntityIds: ids,
+      selectedDrawingEntityId: ids.length > 0 ? ids[ids.length - 1] : null,
+      selectedDrawingEntityIfcType: ids.length > 0 ? state.selectedDrawingEntityIfcType : null,
+    };
+  }),
+
+  clearDrawingEntitySelection: () => set({
+    selectedDrawingEntityId: null,
+    selectedDrawingEntityIfcType: null,
+    selectedDrawingEntityIds: [],
+  }),
+
+  setBooleanResult: (svgPath, label = null) => set({ booleanResultSvgPath: svgPath, booleanResultLabel: label }),
+
+  // ── Drawn Shapes ────────────────────────────────────────────────────────────
+  addDrawnShape2D: (shape) => set((state) => ({ drawnShapes2D: [...state.drawnShapes2D, shape] })),
+
+  updateDrawnShape2D: (id, updates) => set((state) => ({
+    drawnShapes2D: state.drawnShapes2D.map((s) => s.id === id ? { ...s, ...updates } : s),
+  })),
+
+  removeDrawnShape2D: (id) => set((state) => ({
+    drawnShapes2D: state.drawnShapes2D.filter((s) => s.id !== id),
+    selectedShapeId: state.selectedShapeId === id ? null : state.selectedShapeId,
+  })),
+
+  clearDrawnShapes2D: () => set({ drawnShapes2D: [], selectedShapeId: null }),
+
+  setActiveDrawingTool: (tool) => set({
+    activeDrawingTool: tool,
+    inProgressPoints: [],
+    inProgressCursor: null,
+    // Clear drawing entity selection when switching to a shape tool
+    ...(tool !== 'none' ? { selectedShapeId: null } : {}),
+  }),
+
+  setSelectedShapeId: (id) => set({ selectedShapeId: id }),
+
+  addInProgressPoint: (point) => set((state) => ({ inProgressPoints: [...state.inProgressPoints, point] })),
+
+  setInProgressCursor: (point) => set({ inProgressCursor: point }),
+
+  commitInProgressShape: () => {
+    const state = get();
+    const { activeDrawingTool, inProgressPoints, drawingShapeStyle } = state;
+    if (activeDrawingTool === 'none' || inProgressPoints.length === 0) return;
+
+    const minPoints: Record<DrawingTool2D, number> = {
+      none: 0, line: 2, polyline: 2, rectangle: 2, circle: 2, arc: 3,
+    };
+    if (inProgressPoints.length < minPoints[activeDrawingTool]) return;
+
+    const shape: DrawnShape2D = {
+      id: `shape-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type: activeDrawingTool as DrawnShape2D['type'],
+      points: inProgressPoints,
+      ...drawingShapeStyle,
+    };
+    set((s) => ({
+      drawnShapes2D: [...s.drawnShapes2D, shape],
+      inProgressPoints: [],
+      inProgressCursor: null,
+      // For polyline keep accumulating (cleared on double-click commit); others reset
+    }));
+  },
+
+  cancelInProgressShape: () => set({ inProgressPoints: [], inProgressCursor: null }),
+
+  updateDrawingShapeStyle: (style) => set((state) => ({
+    drawingShapeStyle: { ...state.drawingShapeStyle, ...style },
+  })),
+
+  // ── Properties Panel ────────────────────────────────────────────────────────
+  setProperties2DPanelVisible: (visible) => set({ properties2DPanelVisible: visible }),
+  toggleProperties2DPanel: () => set((s) => ({ properties2DPanelVisible: !s.properties2DPanelVisible })),
+
   deleteSelectedAnnotation2D: () => {
     const state = get();
     const sel = state.selectedAnnotation2D;
@@ -662,5 +861,8 @@ export const createDrawing2DSlice: StateCreator<Drawing2DSlice, [], [], Drawing2
     cloudAnnotations2D: [],
     annotation2DCursorPos: null,
     selectedAnnotation2D: null,
+    selectedDrawingEntityId: null,
+    selectedDrawingEntityIfcType: null,
+    selectedDrawingEntityIds: [],
   }),
 });

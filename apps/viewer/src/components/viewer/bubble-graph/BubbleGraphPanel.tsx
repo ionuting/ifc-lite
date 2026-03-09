@@ -67,6 +67,37 @@ const NODE_COLORS: Record<string, string> = Object.fromEntries(
 
 const MM_TO_PX = 0.05; // 1 mm = 0.05 canvas pixels
 
+// ─── NumInput ─────────────────────────────────────────────────────────────
+/**
+ * Controlled number input that preserves intermediate typing state (e.g. "-")
+ * so users can enter negative values without the field resetting mid-type.
+ */
+function NumInput({
+  value, step = 1, onChange, className = '',
+}: {
+  value: number; step?: number; onChange: (v: number) => void; className?: string;
+}) {
+  const [display, setDisplay] = useState(String(value));
+  useEffect(() => {
+    if (isNaN(value)) return;
+    const local = parseFloat(display);
+    if (isNaN(local) || Math.abs(local - value) > 1e-9) setDisplay(String(value));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <input
+      type="number" step={step}
+      className={cn('bg-background border border-border rounded px-1.5 py-0.5 text-xs', className)}
+      value={display}
+      onChange={e => {
+        setDisplay(e.target.value);
+        const n = parseFloat(e.target.value);
+        if (!isNaN(n)) onChange(n);
+      }}
+    />
+  );
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function getNodeTypeData(id: string): NodeType | undefined {
@@ -196,6 +227,8 @@ function PropertiesPanel({
     'wall_type', 'slab_type', 'material',
     'bottomElevation', 'topElevation', 'axesX', 'axesY', 'width', 'height', 'depth',
     'sill_height', 'wall_offset', 'discipline', 'offset', 'elevation',
+    'offsetStart', 'offsetEnd', 'offsetVerticalStart', 'offsetVerticalEnd',
+    'offsetX', 'offsetY', 'offsetBase', 'offsetTop',
   ]);
 
   return (
@@ -319,6 +352,22 @@ function PropertiesPanel({
                   <option key={g.id} value={g.id}>{g.label}</option>
                 ))}
               </select>
+              <span className="text-muted-foreground">Off.X (mm)</span>
+              <NumInput step={25} className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+                value={(node.properties.offsetX as number) ?? 0}
+                onChange={(v) => onUpdateProp('offsetX', v)} />
+              <span className="text-muted-foreground">Off.Y (mm)</span>
+              <NumInput step={25} className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+                value={(node.properties.offsetY as number) ?? 0}
+                onChange={(v) => onUpdateProp('offsetY', v)} />
+              <span className="text-muted-foreground">Off.Base (mm)</span>
+              <NumInput step={25} className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+                value={(node.properties.offsetBase as number) ?? 0}
+                onChange={(v) => onUpdateProp('offsetBase', v)} />
+              <span className="text-muted-foreground">Off.Top (mm)</span>
+              <NumInput step={25} className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+                value={(node.properties.offsetTop as number) ?? 0}
+                onChange={(v) => onUpdateProp('offsetTop', v)} />
             </>)}
           </div>
         </div>
@@ -336,6 +385,23 @@ function PropertiesPanel({
               <option key={g.id} value={g.id}>{g.label}</option>
             ))}
           </select>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            {([
+              ['offsetX',    'Off.X (mm)'],
+              ['offsetY',    'Off.Y (mm)'],
+              ['offsetBase', 'Off.Base (mm)'],
+              ['offsetTop',  'Off.Top (mm)'],
+            ] as const).map(([key, label]) => (
+              <div key={key}>
+                <label className="text-[10px] text-muted-foreground block mb-0.5">{label}</label>
+                <NumInput step={25}
+                  className="w-full"
+                  value={(node.properties[key] as number) ?? 0}
+                  onChange={(v) => onUpdateProp(key, v)}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -359,6 +425,30 @@ function PropertiesPanel({
               className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
               value={(node.properties.height as number) ?? 300}
               onChange={(e) => onUpdateProp('height', parseFloat(e.target.value))}
+            />
+            <span className="text-muted-foreground">Off.Start (mm)</span>
+            <NumInput step={25}
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetStart as number) ?? 0}
+              onChange={(v) => onUpdateProp('offsetStart', v)}
+            />
+            <span className="text-muted-foreground">Off.End (mm)</span>
+            <NumInput step={25}
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetEnd as number) ?? 0}
+              onChange={(v) => onUpdateProp('offsetEnd', v)}
+            />
+            <span className="text-muted-foreground">Z.Start (mm)</span>
+            <NumInput step={25}
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetVerticalStart as number) ?? 0}
+              onChange={(v) => onUpdateProp('offsetVerticalStart', v)}
+            />
+            <span className="text-muted-foreground">Z.End (mm)</span>
+            <NumInput step={25}
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetVerticalEnd as number) ?? 0}
+              onChange={(v) => onUpdateProp('offsetVerticalEnd', v)}
             />
           </div>
         </div>
@@ -384,6 +474,20 @@ function PropertiesPanel({
               className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
               value={(node.properties.height as number) ?? 2500}
               onChange={(e) => onUpdateProp('height', parseFloat(e.target.value))}
+            />
+            <span className="text-muted-foreground">Off.Start (mm)</span>
+            <input
+              type="number" step="25"
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetStart as number) ?? 0}
+              onChange={(e) => onUpdateProp('offsetStart', parseFloat(e.target.value))}
+            />
+            <span className="text-muted-foreground">Off.End (mm)</span>
+            <input
+              type="number" step="25"
+              className="bg-background border border-border rounded px-1.5 py-0.5 text-xs"
+              value={(node.properties.offsetEnd as number) ?? 0}
+              onChange={(e) => onUpdateProp('offsetEnd', parseFloat(e.target.value))}
             />
             <span className="text-muted-foreground">Has Beam</span>
             <select

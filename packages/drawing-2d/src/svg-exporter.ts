@@ -32,6 +32,11 @@ import {
   type HatchPattern,
 } from './styles';
 import { boundsSize, boundsCenter } from './math';
+import {
+  resolveObjectStyle,
+  LINE_PATTERN_DASH_ARRAYS,
+  type ObjectStylesConfig,
+} from './object-styles';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -48,6 +53,12 @@ export interface SVGExportOptions {
   showHiddenLines?: boolean;
   /** Include hatching */
   showHatching?: boolean;
+  /**
+   * Object Styles configuration (Revit-like per-category line/fill/hatch
+   * overrides).  When provided, takes precedence over the built-in
+   * hard-coded defaults from styles.ts.
+   */
+  objectStyles?: Partial<ObjectStylesConfig>;
   /** Include title block */
   showTitleBlock?: boolean;
   /** Drawing title */
@@ -97,16 +108,18 @@ export class SVGExporter {
     let svg = this.createHeader(paperSize, backgroundColor);
     svg += this.createDefs(drawing, scale.factor);
 
+    const { objectStyles } = options;
+
     // Layer: Hatching (bottom)
     if (showHatching && drawing.cutPolygons.length > 0) {
-      svg += this.createHatchingLayer(drawing.cutPolygons, transform, scale.factor);
+      svg += this.createHatchingLayer(drawing.cutPolygons, transform, scale.factor, objectStyles);
     }
 
     // Layer: Hidden lines
     if (showHiddenLines) {
       const hiddenLines = drawing.lines.filter((l) => l.visibility === 'hidden');
       if (hiddenLines.length > 0) {
-        svg += this.createLineLayer('hidden-lines', hiddenLines, transform, 'Hidden Lines');
+        svg += this.createLineLayer('hidden-lines', hiddenLines, transform, 'Hidden Lines', objectStyles);
       }
     }
 
@@ -115,7 +128,7 @@ export class SVGExporter {
       (l) => l.category === 'projection' && l.visibility !== 'hidden'
     );
     if (projectionLines.length > 0) {
-      svg += this.createLineLayer('projection-lines', projectionLines, transform, 'Projection');
+      svg += this.createLineLayer('projection-lines', projectionLines, transform, 'Projection', objectStyles);
     }
 
     // Layer: Silhouettes and creases
@@ -125,13 +138,13 @@ export class SVGExporter {
         l.visibility !== 'hidden'
     );
     if (featureLines.length > 0) {
-      svg += this.createLineLayer('feature-lines', featureLines, transform, 'Feature Edges');
+      svg += this.createLineLayer('feature-lines', featureLines, transform, 'Feature Edges', objectStyles);
     }
 
     // Layer: Cut lines (top)
     const cutLines = drawing.lines.filter((l) => l.category === 'cut');
     if (cutLines.length > 0) {
-      svg += this.createLineLayer('cut-lines', cutLines, transform, 'Cut Lines');
+      svg += this.createLineLayer('cut-lines', cutLines, transform, 'Cut Lines', objectStyles);
     }
 
     // Title block
@@ -275,58 +288,154 @@ export class SVGExporter {
     id: string,
     lines: DrawingLine[],
     transform: Transform2D,
-    label: string
+    label: string,
+    objectStyles?: Partial<ObjectStylesConfig>,
   ): string {
     let layer = `  <g id="${id}" inkscape:label="${label}" inkscape:groupmode="layer">\n`;
 
     for (const line of lines) {
-      layer += this.renderLine(line, transform);
+      // Skip invisible types (IfcOpeningElement etc.) when objectStyles provided
+      if (objectStyles && line.ifcType) {
+        const obj = resolveObjectStyle(line.ifcType, objectStyles);
+        if (!obj.visible) continue;
+      }
+      layer += this.renderLine(line, transform, objectStyles);
     }
 
     layer += '  </g>\n';
     return layer;
   }
 
-  private renderLine(line: DrawingLine, transform: Transform2D): string {
-    const style = getLineStyle(line.category, line.ifcType);
+  private renderLine(
+    line: DrawingLine,
+    transform: Transform2D,
+    objectStyles?: Partial<ObjectStylesConfig>,
+  ): string {
     const p0 = this.transformPoint(line.line.start, transform);
     const p1 = this.transformPoint(line.line.end, transform);
 
-    const dashArray =
-      style.dashPattern.length > 0 ? ` stroke-dasharray="${style.dashPattern.join(' ')}"` : '';
+    let weight: number;
+    let color: string;
+    let dashArray: string;
+    let lineCap: string;
+
+    if (objectStyles && line.ifcType) {
+      // Use ObjectStyles when provided — category drives cut vs projection pen
+      const objStyle = resolveObjectStyle(line.ifcType, objectStyles);
+      const lineProps =
+        line.category === 'cut' ? objStyle.cutLines : objStyle.projectionLines;
+      weight = lineProps.lineWeight;
+      color = lineProps.lineColor;
+      const dashes = LINE_PATTERN_DASH_ARRAYS[lineProps.linePattern] ?? [];
+      dashArray = dashes.length > 0 ? ` stroke-dasharray="${dashes.join(' ')}"` : '';
+      lineCap = 'round';
+    } else {
+      // Legacy fallback: use hard-coded styles.ts
+      const style = getLineStyle(line.category, line.ifcType);
+      weight = style.weight;
+      color = style.color;
+      dashArray = style.dashPattern.length > 0
+        ? ` stroke-dasharray="${style.dashPattern.join(' ')}"`
+        : '';
+      lineCap = style.lineCap;
+    }
 
     return `    <line x1="${p0.x.toFixed(3)}" y1="${p0.y.toFixed(3)}" x2="${p1.x.toFixed(3)}" y2="${p1.y.toFixed(3)}"
-          stroke="${style.color}" stroke-width="${style.weight}"
-          stroke-linecap="${style.lineCap}"${dashArray}
+          stroke="${color}" stroke-width="${weight}"
+          stroke-linecap="${lineCap}"${dashArray}
           data-entity-id="${line.entityId}" data-ifc-type="${line.ifcType}"/>\n`;
   }
 
   private createHatchingLayer(
     polygons: DrawingPolygon[],
     transform: Transform2D,
-    scaleFactor: number
+    scaleFactor: number,
+    objectStyles?: Partial<ObjectStylesConfig>,
   ): string {
     let layer = '  <g id="hatching" inkscape:label="Hatching" inkscape:groupmode="layer">\n';
 
     for (const polygon of polygons) {
-      const pattern = getHatchPattern(polygon.ifcType);
+      // Resolve style: ObjectStyles take priority, fall back to hard-coded
+      let fillColor: string | null = null;
+      let strokeColor: string;
+      let strokeWeight: number;
+      let hatchPattern: HatchPattern | null = null;
 
-      if (pattern.type === 'none') continue;
+      if (objectStyles) {
+        const objStyle = resolveObjectStyle(polygon.ifcType, objectStyles);
+        if (!objStyle.visible) continue;
 
-      // Render polygon with fill
-      layer += this.renderPolygon(polygon, transform, pattern);
+        fillColor = objStyle.fillColor;
+        strokeColor = objStyle.cutLines.lineColor;
+        strokeWeight = objStyle.cutLines.lineWeight;
 
-      // Generate and render hatch lines for non-solid fills
-      if (pattern.type !== 'solid' && pattern.type !== 'glass') {
-        const hatchResult = this.hatchGenerator.generateHatch(polygon, scaleFactor);
+        if (objStyle.hatch) {
+          hatchPattern = {
+            type: objStyle.hatch.pattern,
+            spacing: objStyle.hatch.spacing,
+            angle: objStyle.hatch.angle,
+            secondaryAngle: objStyle.hatch.secondaryAngle,
+            lineWeight: objStyle.hatch.lineWeight,
+            strokeColor: objStyle.hatch.lineColor,
+          };
+        }
+      } else {
+        // Legacy path
+        const pattern = getHatchPattern(polygon.ifcType);
+        if (pattern.type === 'none') continue;
+        hatchPattern = pattern;
+        fillColor = pattern.fillColor ?? '#FFFFFF';
+        strokeColor = pattern.strokeColor;
+        strokeWeight = pattern.lineWeight;
+      }
+
+      // Render polygon outline + fill
+      layer += this.renderPolygonStyled(
+        polygon, transform, fillColor, strokeColor, strokeWeight,
+        hatchPattern?.type ?? 'none',
+      );
+
+      // Generate and render explicit hatch lines
+      if (hatchPattern && hatchPattern.type !== 'none' && hatchPattern.type !== 'solid' && hatchPattern.type !== 'glass') {
+        const hatchResult = this.hatchGenerator.generateHatch(polygon, scaleFactor, {
+          type: hatchPattern.type,
+          spacing: hatchPattern.spacing,
+          angle: hatchPattern.angle,
+          secondaryAngle: hatchPattern.secondaryAngle,
+        });
         for (const hatchLine of hatchResult.lines) {
-          layer += this.renderHatchLine(hatchLine, transform, pattern);
+          layer += this.renderHatchLine(hatchLine, transform, hatchPattern);
         }
       }
     }
 
     layer += '  </g>\n';
     return layer;
+  }
+
+  private renderPolygonStyled(
+    polygon: DrawingPolygon,
+    transform: Transform2D,
+    fillColor: string | null,
+    strokeColor: string,
+    strokeWeight: number,
+    hatchPatternType: string,
+  ): string {
+    const pathData = this.polygonToPath(polygon.polygon, transform);
+    let fill: string;
+    if (hatchPatternType === 'solid') {
+      fill = fillColor ?? '#CCCCCC';
+    } else if (hatchPatternType === 'glass') {
+      fill = fillColor ?? 'rgba(200,230,255,0.3)';
+    } else if (hatchPatternType === 'none' || !hatchPatternType) {
+      fill = fillColor ?? 'none';
+    } else {
+      // Use SVG pattern ref for hatch overlay; solid fill underneath
+      fill = fillColor ? fillColor : 'none';
+    }
+    return `    <path d="${pathData}" fill="${fill}"
+          stroke="${strokeColor}" stroke-width="${strokeWeight}"
+          data-entity-id="${polygon.entityId}" data-ifc-type="${polygon.ifcType}"/>\n`;
   }
 
   private renderPolygon(
@@ -344,7 +453,6 @@ export class SVGExporter {
     } else if (pattern.type === 'none') {
       fill = 'none';
     } else {
-      // Use pattern fill
       fill = `url(#hatch-${pattern.type})`;
     }
 

@@ -114,6 +114,8 @@ export interface CompileCtx {
   edges: Edge[];
   /** The id of the element node being compiled. */
   nodeId: string;
+  /** Record a nodeId → IFC expressId mapping for 2D canvas handle lookup. */
+  recordExprId?: (nodeId: string, exprId: number) => void;
 }
 
 /**

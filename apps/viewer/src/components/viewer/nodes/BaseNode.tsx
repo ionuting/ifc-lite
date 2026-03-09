@@ -55,14 +55,46 @@ export function NodeInput({
   placeholder?: string;
   step?: number;
 }) {
+  const cls = "nodrag flex-1 h-6 px-1.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary w-full";
+
+  // Number inputs: use local string state so intermediate values like "-"
+  // are preserved while the user types a negative number.
+  const [display, setDisplay] = React.useState(type === 'number' ? String(value ?? 0) : '');
+
+  React.useEffect(() => {
+    if (type !== 'number') return;
+    const ext = Number(value);
+    if (isNaN(ext)) return;
+    const local = parseFloat(display);
+    if (isNaN(local) || Math.abs(local - ext) > 1e-9) setDisplay(String(ext));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  if (type === 'number') {
+    return (
+      <input
+        type="number"
+        value={display}
+        placeholder={placeholder}
+        step={step}
+        className={cls}
+        onChange={e => {
+          const raw = e.target.value;
+          setDisplay(raw);
+          const num = parseFloat(raw);
+          if (!isNaN(num)) onChange(num);
+        }}
+      />
+    );
+  }
+
   return (
     <input
       type={type}
       value={value}
       placeholder={placeholder}
-      step={step}
-      className="nodrag flex-1 h-6 px-1.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary w-full"
-      onChange={e => onChange(type === 'number' ? e.target.valueAsNumber : e.target.value)}
+      className={cls}
+      onChange={e => onChange(e.target.value)}
     />
   );
 }

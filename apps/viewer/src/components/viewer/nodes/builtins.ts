@@ -96,12 +96,14 @@ NodeRegistry.register(
     iconColor: 'text-emerald-500',
     category: 'Elements',
     fields: [
-      { id: 'name',      label: 'Name',   type: 'text',   defaultValue: '',  placeholder: 'optional' },
-      { id: 'startX',    label: 'Start X', type: 'number', defaultValue: 0,  step: 0.5 },
-      { id: 'startY',    label: 'Start Y', type: 'number', defaultValue: 0,  step: 0.5 },
-      { id: 'length',    label: 'Length',  type: 'number', defaultValue: 5,  step: 0.5 },
-      { id: 'thickness', label: 'Thick.',  type: 'number', defaultValue: 0.2, step: 0.05 },
-      { id: 'height',    label: 'Height',  type: 'number', defaultValue: 3,  step: 0.5 },
+      { id: 'name',        label: 'Name',      type: 'text',   defaultValue: '',  placeholder: 'optional' },
+      { id: 'startX',      label: 'Start X',   type: 'number', defaultValue: 0,  step: 0.5 },
+      { id: 'startY',      label: 'Start Y',   type: 'number', defaultValue: 0,  step: 0.5 },
+      { id: 'length',      label: 'Length',    type: 'number', defaultValue: 5,  step: 0.5 },
+      { id: 'thickness',   label: 'Thick.',    type: 'number', defaultValue: 0.2, step: 0.05 },
+      { id: 'height',      label: 'Height',    type: 'number', defaultValue: 3,  step: 0.5 },
+      { id: 'offsetStart', label: 'Off.Start', type: 'number', defaultValue: 0,  step: 0.05 },
+      { id: 'offsetEnd',   label: 'Off.End',   type: 'number', defaultValue: 0,  step: 0.05 },
     ],
     handles: [
       { type: 'target', position: 'left', color: '#a855f7' },
@@ -129,14 +131,27 @@ NodeRegistry.register(
           };
         });
       for (const tf of instances) {
-        creator.addIfcWall(storeyId, {
+        const rawStart = applyTransformToPoint([d.startX ?? 0, d.startY ?? 0, 0], tf);
+        const rawEnd   = applyTransformToPoint([(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, 0], tf);
+        // Apply axis offsets along wall direction
+        const dx = rawEnd[0] - rawStart[0];
+        const dy = rawEnd[1] - rawStart[1];
+        const wl = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ux = dx / wl;
+        const uy = dy / wl;
+        const os = d.offsetStart ?? 0;
+        const oe = d.offsetEnd ?? 0;
+        const Start: [number, number, number] = [rawStart[0] - os * ux, rawStart[1] - os * uy, rawStart[2]];
+        const End:   [number, number, number] = [rawEnd[0]   + oe * ux, rawEnd[1]   + oe * uy, rawEnd[2]];
+        const wallId = creator.addIfcWall(storeyId, {
           Name:      d.name || undefined,
-          Start:     applyTransformToPoint([d.startX ?? 0, d.startY ?? 0, 0], tf),
-          End:       applyTransformToPoint([(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, 0], tf),
+          Start,
+          End,
           Thickness: d.thickness ?? 0.2,
           Height:    d.height ?? 3,
           Openings:  openings.length ? openings : undefined,
         });
+        ctx.recordExprId?.(ctx.nodeId, wallId);
       }
     },
   },
@@ -153,12 +168,16 @@ NodeRegistry.register(
     iconColor: 'text-orange-500',
     category: 'Elements',
     fields: [
-      { id: 'name',  label: 'Name',  type: 'text',   defaultValue: '',   placeholder: 'optional' },
-      { id: 'x',     label: 'X',     type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'y',     label: 'Y',     type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'width', label: 'Width', type: 'number', defaultValue: 0.3,  step: 0.05 },
-      { id: 'depth', label: 'Depth', type: 'number', defaultValue: 0.3,  step: 0.05 },
-      { id: 'height',label: 'Height',type: 'number', defaultValue: 3,    step: 0.5  },
+      { id: 'name',  label: 'Name',    type: 'text',   defaultValue: '',   placeholder: 'optional' },
+      { id: 'x',     label: 'X',       type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'y',     label: 'Y',       type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'width', label: 'Width',   type: 'number', defaultValue: 0.3,  step: 0.05 },
+      { id: 'depth', label: 'Depth',   type: 'number', defaultValue: 0.3,  step: 0.05 },
+      { id: 'height',label: 'Height',  type: 'number', defaultValue: 3,    step: 0.5  },
+      { id: 'offsetX',    label: 'Off.X',    type: 'number', defaultValue: 0, step: 0.05 },
+      { id: 'offsetY',    label: 'Off.Y',    type: 'number', defaultValue: 0, step: 0.05 },
+      { id: 'offsetBase', label: 'Off.Base', type: 'number', defaultValue: 0, step: 0.05 },
+      { id: 'offsetTop',  label: 'Off.Top',  type: 'number', defaultValue: 0, step: 0.05 },
     ],
     handles: [
       { type: 'target', position: 'left', color: '#a855f7' },
@@ -171,13 +190,19 @@ NodeRegistry.register(
       const tfs = resolveTransforms(ctx.nodeId, ctx);
       const instances = tfs.length ? tfs : [IDENTITY_TF];
       for (const tf of instances) {
-        creator.addIfcColumn(storeyId, {
+        const pos = applyTransformToPoint([
+          (d.x ?? 0) + (d.offsetX ?? 0),
+          (d.y ?? 0) + (d.offsetY ?? 0),
+          -(d.offsetBase ?? 0),
+        ], tf);
+        const colId = creator.addIfcColumn(storeyId, {
           Name:     d.name || undefined,
-          Position: applyTransformToPoint([d.x ?? 0, d.y ?? 0, 0], tf),
+          Position: pos,
           Width:    d.width ?? 0.3,
           Depth:    d.depth ?? 0.3,
-          Height:   d.height ?? 3,
+          Height:   (d.height ?? 3) + (d.offsetBase ?? 0) + (d.offsetTop ?? 0),
         });
+        ctx.recordExprId?.(ctx.nodeId, colId);
       }
     },
   },
@@ -194,12 +219,16 @@ NodeRegistry.register(
     iconColor: 'text-amber-500',
     category: 'Elements',
     fields: [
-      { id: 'name',       label: 'Name',    type: 'text',   defaultValue: '',   placeholder: 'optional' },
-      { id: 'startX',     label: 'Start X', type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'startY',     label: 'Start Y', type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'length',     label: 'Length',  type: 'number', defaultValue: 5,    step: 0.5  },
-      { id: 'width',      label: 'Width',   type: 'number', defaultValue: 0.2,  step: 0.05 },
-      { id: 'beamHeight', label: 'BHeight', type: 'number', defaultValue: 0.4,  step: 0.05 },
+      { id: 'name',                label: 'Name',        type: 'text',   defaultValue: '',   placeholder: 'optional' },
+      { id: 'startX',              label: 'Start X',     type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'startY',              label: 'Start Y',     type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'length',              label: 'Length',      type: 'number', defaultValue: 5,    step: 0.5  },
+      { id: 'width',               label: 'Width',       type: 'number', defaultValue: 0.2,  step: 0.05 },
+      { id: 'beamHeight',          label: 'BHeight',     type: 'number', defaultValue: 0.4,  step: 0.05 },
+      { id: 'offsetStart',         label: 'Off.Start',   type: 'number', defaultValue: 0,    step: 0.05 },
+      { id: 'offsetEnd',           label: 'Off.End',     type: 'number', defaultValue: 0,    step: 0.05 },
+      { id: 'offsetVerticalStart', label: 'Z.Start',     type: 'number', defaultValue: 0,    step: 0.05 },
+      { id: 'offsetVerticalEnd',   label: 'Z.End',       type: 'number', defaultValue: 0,    step: 0.05 },
     ],
     handles: [
       { type: 'target', position: 'left', color: '#a855f7' },
@@ -212,13 +241,25 @@ NodeRegistry.register(
       const tfs = resolveTransforms(ctx.nodeId, ctx);
       const instances = tfs.length ? tfs : [IDENTITY_TF];
       for (const tf of instances) {
-        creator.addIfcBeam(storeyId, {
+        const rawStart = applyTransformToPoint([d.startX ?? 0, d.startY ?? 0, d.offsetVerticalStart ?? 0], tf);
+        const rawEnd   = applyTransformToPoint([(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, d.offsetVerticalEnd ?? 0], tf);
+        const dx = rawEnd[0] - rawStart[0];
+        const dy = rawEnd[1] - rawStart[1];
+        const bl = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ux = dx / bl;
+        const uy = dy / bl;
+        const os = d.offsetStart ?? 0;
+        const oe = d.offsetEnd ?? 0;
+        const Start: [number, number, number] = [rawStart[0] - os * ux, rawStart[1] - os * uy, rawStart[2]];
+        const End:   [number, number, number] = [rawEnd[0]   + oe * ux, rawEnd[1]   + oe * uy, rawEnd[2]];
+        const beamId = creator.addIfcBeam(storeyId, {
           Name:   d.name || undefined,
-          Start:  applyTransformToPoint([d.startX ?? 0, d.startY ?? 0, 0], tf),
-          End:    applyTransformToPoint([(d.startX ?? 0) + (d.length ?? 5), d.startY ?? 0, 0], tf),
+          Start,
+          End,
           Width:  d.width ?? 0.2,
           Height: d.beamHeight ?? 0.4,
         });
+        ctx.recordExprId?.(ctx.nodeId, beamId);
       }
     },
   },
@@ -235,12 +276,13 @@ NodeRegistry.register(
     iconColor: 'text-cyan-500',
     category: 'Elements',
     fields: [
-      { id: 'name',      label: 'Name',  type: 'text',   defaultValue: '',   placeholder: 'optional' },
-      { id: 'x',         label: 'X',     type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'y',         label: 'Y',     type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'width',     label: 'Width', type: 'number', defaultValue: 10,   step: 0.5  },
-      { id: 'depth',     label: 'Depth', type: 'number', defaultValue: 8,    step: 0.5  },
-      { id: 'thickness', label: 'Thick', type: 'number', defaultValue: 0.2,  step: 0.05 },
+      { id: 'name',        label: 'Name',      type: 'text',   defaultValue: '',   placeholder: 'optional' },
+      { id: 'x',           label: 'X',         type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'y',           label: 'Y',         type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'width',       label: 'Width',     type: 'number', defaultValue: 10,   step: 0.5  },
+      { id: 'depth',       label: 'Depth',     type: 'number', defaultValue: 8,    step: 0.5  },
+      { id: 'thickness',   label: 'Thick',     type: 'number', defaultValue: 0.2,  step: 0.05 },
+      { id: 'offsetOuter', label: 'Off.Outer', type: 'number', defaultValue: 0,    step: 0.05 },
     ],
     handles: [
       { type: 'target', position: 'left', color: '#a855f7' },
@@ -252,14 +294,17 @@ NodeRegistry.register(
       const d   = data as SlabNodeData;
       const tfs = resolveTransforms(ctx.nodeId, ctx);
       const instances = tfs.length ? tfs : [IDENTITY_TF];
+      const off = d.offsetOuter ?? 0;
       for (const tf of instances) {
-        creator.addIfcSlab(storeyId, {
+        const pos = applyTransformToPoint([(d.x ?? 0) - off, (d.y ?? 0) - off, 0], tf);
+        const slabId = creator.addIfcSlab(storeyId, {
           Name:      d.name || undefined,
-          Position:  applyTransformToPoint([d.x ?? 0, d.y ?? 0, 0], tf),
-          Width:     d.width ?? 10,
-          Depth:     d.depth ?? 8,
+          Position:  pos,
+          Width:     Math.max(0, (d.width ?? 10) + 2 * off),
+          Depth:     Math.max(0, (d.depth ?? 8)  + 2 * off),
           Thickness: d.thickness ?? 0.2,
         });
+        ctx.recordExprId?.(ctx.nodeId, slabId);
       }
     },
   },
@@ -320,12 +365,13 @@ NodeRegistry.register(
     iconColor: 'text-blue-400',
     category: 'Elements',
     fields: [
-      { id: 'name',   label: 'Name',   type: 'text',   defaultValue: '',   placeholder: 'optional' },
-      { id: 'x',      label: 'X',      type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'y',      label: 'Y',      type: 'number', defaultValue: 0,    step: 0.5  },
-      { id: 'width',  label: 'Width',  type: 'number', defaultValue: 5,    step: 0.5  },
-      { id: 'depth',  label: 'Depth',  type: 'number', defaultValue: 4,    step: 0.5  },
-      { id: 'height', label: 'Height', type: 'number', defaultValue: 2.65, step: 0.05 },
+      { id: 'name',        label: 'Name',      type: 'text',   defaultValue: '',   placeholder: 'optional' },
+      { id: 'x',           label: 'X',         type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'y',           label: 'Y',         type: 'number', defaultValue: 0,    step: 0.5  },
+      { id: 'width',       label: 'Width',     type: 'number', defaultValue: 5,    step: 0.5  },
+      { id: 'depth',       label: 'Depth',     type: 'number', defaultValue: 4,    step: 0.5  },
+      { id: 'height',      label: 'Height',    type: 'number', defaultValue: 2.65, step: 0.05 },
+      { id: 'offsetOuter', label: 'Off.Outer', type: 'number', defaultValue: 0,    step: 0.05 },
     ],
     handles: [
       { type: 'target', position: 'left', color: '#a855f7' },
@@ -337,14 +383,17 @@ NodeRegistry.register(
       const d   = data as RoomNodeData;
       const tfs = resolveTransforms(ctx.nodeId, ctx);
       const instances = tfs.length ? tfs : [IDENTITY_TF];
+      const off = d.offsetOuter ?? 0;
       for (const tf of instances) {
-        creator.addIfcSpace(storeyId, {
+        const pos = applyTransformToPoint([(d.x ?? 0) - off, (d.y ?? 0) - off, 0], tf);
+        const roomId = creator.addIfcSpace(storeyId, {
           Name:     d.name || undefined,
-          Position: applyTransformToPoint([d.x ?? 0, d.y ?? 0, 0], tf),
-          Width:    d.width ?? 5,
-          Depth:    d.depth ?? 4,
+          Position: pos,
+          Width:    Math.max(0, (d.width ?? 5) + 2 * off),
+          Depth:    Math.max(0, (d.depth ?? 4) + 2 * off),
           Height:   d.height ?? 2.65,
         });
+        ctx.recordExprId?.(ctx.nodeId, roomId);
       }
     },
   },

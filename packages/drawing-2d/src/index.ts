@@ -433,3 +433,23 @@ export type {
   TitleBlockExtras,
   PositionMm,
 } from './sheet';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OBJECT STYLES — Revit-like per-category graphic configuration
+// ═══════════════════════════════════════════════════════════════════════════
+
+export {
+  DEFAULT_OBJECT_STYLES,
+  LINE_PATTERN_DASH_ARRAYS,
+  resolveObjectStyle,
+  isIfcTypeVisible,
+  getHiddenIfcTypes,
+} from './object-styles';
+
+export type {
+  LinePatternPreset,
+  ObjectStyleLineProps,
+  ObjectStyleHatch,
+  ObjectStyle,
+  ObjectStylesConfig,
+} from './object-styles';

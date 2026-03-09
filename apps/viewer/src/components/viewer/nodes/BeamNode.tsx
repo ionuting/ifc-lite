@@ -32,6 +32,18 @@ export function BeamNode({ id, data, selected }: NodeProps<BeamFlowNode>) {
       <NodeField label="BHeight">
         <NodeInput type="number" value={data.beamHeight} onChange={v => upd({ beamHeight: Number(v) })} step={0.05} />
       </NodeField>
+      <NodeField label="Off.Start">
+        <NodeInput type="number" value={data.offsetStart ?? 0} onChange={v => upd({ offsetStart: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Off.End">
+        <NodeInput type="number" value={data.offsetEnd ?? 0} onChange={v => upd({ offsetEnd: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Z.Start">
+        <NodeInput type="number" value={data.offsetVerticalStart ?? 0} onChange={v => upd({ offsetVerticalStart: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Z.End">
+        <NodeInput type="number" value={data.offsetVerticalEnd ?? 0} onChange={v => upd({ offsetVerticalEnd: Number(v) })} step={0.05} />
+      </NodeField>
       <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '35%' }} title="Storey" />
       <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '70%' }} title="Transform list" />
     </BaseNode>

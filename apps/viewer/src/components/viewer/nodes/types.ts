@@ -27,6 +27,10 @@ export interface WallNodeData extends Record<string, unknown> {
   length: number;
   thickness: number;
   height: number;
+  /** Extend (positive) or shrink (negative) the wall at its start point along the wall axis */
+  offsetStart?: number;
+  /** Extend (positive) or shrink (negative) the wall at its end point along the wall axis */
+  offsetEnd?: number;
 }
 
 export interface ColumnNodeData extends Record<string, unknown> {
@@ -36,6 +40,14 @@ export interface ColumnNodeData extends Record<string, unknown> {
   width: number;
   depth: number;
   height: number;
+  /** Plan offset along local X (positive = shift right) */
+  offsetX?: number;
+  /** Plan offset along local Y (positive = shift forward) */
+  offsetY?: number;
+  /** Lower the column base (positive = base moves down, column gets taller) */
+  offsetBase?: number;
+  /** Raise the column top (positive = top moves up, column gets taller) */
+  offsetTop?: number;
 }
 
 export interface BeamNodeData extends Record<string, unknown> {
@@ -45,6 +57,14 @@ export interface BeamNodeData extends Record<string, unknown> {
   length: number;
   width: number;
   beamHeight: number;
+  /** Extend (positive) or shrink (negative) the beam start along the beam axis */
+  offsetStart?: number;
+  /** Extend (positive) or shrink (negative) the beam end along the beam axis */
+  offsetEnd?: number;
+  /** Vertical Z offset at the start point */
+  offsetVerticalStart?: number;
+  /** Vertical Z offset at the end point */
+  offsetVerticalEnd?: number;
 }
 
 export interface SlabNodeData extends Record<string, unknown> {
@@ -54,6 +74,8 @@ export interface SlabNodeData extends Record<string, unknown> {
   width: number;
   depth: number;
   thickness: number;
+  /** Uniform outer contour offset — positive expands, negative shrinks */
+  offsetOuter?: number;
 }
 
 export interface OpeningNodeData extends Record<string, unknown> {
@@ -72,6 +94,8 @@ export interface RoomNodeData extends Record<string, unknown> {
   width: number;
   depth: number;
   height: number;
+  /** Uniform outer contour offset — positive expands, negative shrinks */
+  offsetOuter?: number;
 }
 
 export interface TransformNodeData extends Record<string, unknown> {
@@ -130,7 +154,17 @@ export const INITIAL_EDGES: Edge[] = [
  * This function is async because some handlers (e.g. GraphML Builder) may
  * need to fetch external resources.
  */
-export async function compileGraphToIfc(nodes: Node[], edges: Edge[]): Promise<string | null> {
+export async function compileGraphToIfc(
+  nodes: Node[],
+  edges: Edge[],
+): Promise<{ content: string; nodeExprIds: Map<string, number[]> } | null> {
+  const nodeExprIds = new Map<string, number[]>();
+  const recordExprId = (nodeId: string, exprId: number) => {
+    const arr = nodeExprIds.get(nodeId) ?? [];
+    arr.push(exprId);
+    nodeExprIds.set(nodeId, arr);
+  };
+
   const projectNode = nodes.find(n => n.type === 'projectNode');
   if (!projectNode) return null;
 
@@ -150,7 +184,7 @@ export async function compileGraphToIfc(nodes: Node[], edges: Edge[]): Promise<s
 
   if (storeyNodes.length === 0) {
     creator.addIfcBuildingStorey({ Name: 'Ground Floor', Elevation: 0 });
-    return creator.toIfc().content;
+    return { content: creator.toIfc().content, nodeExprIds };
   }
 
   for (const storeyNode of storeyNodes) {
@@ -172,11 +206,11 @@ export async function compileGraphToIfc(nodes: Node[], edges: Edge[]): Promise<s
           elemNode.data as Record<string, unknown>,
           storeyId,
           creator,
-          { nodes, edges, nodeId: elemNode.id },
+          { nodes, edges, nodeId: elemNode.id, recordExprId },
         );
       }
     }
   }
 
-  return creator.toIfc().content;
+  return { content: creator.toIfc().content, nodeExprIds };
 }

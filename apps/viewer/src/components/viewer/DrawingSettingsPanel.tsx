@@ -12,7 +12,7 @@
  */
 
 import React, { useCallback, useState, useMemo } from 'react';
-import { X, Palette, Plus, Trash2, ChevronDown, ChevronRight, GripVertical, Eye, EyeOff, Check, Copy, PenTool, Flame, Building2, Wrench, Printer, type LucideIcon } from 'lucide-react';
+import { X, Palette, Plus, Trash2, ChevronDown, ChevronRight, GripVertical, Eye, EyeOff, Check, Copy, PenTool, Flame, Building2, Wrench, Printer, Layers, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/collapsible';
 import { useViewerStore } from '@/store';
 import type { GraphicOverrideRule, GraphicStyle } from '@ifc-lite/drawing-2d';
+import { DEFAULT_OBJECT_STYLES, resolveObjectStyle, type ObjectStylesConfig } from '@ifc-lite/drawing-2d';
 
 // Common IFC types for the dropdown
 const COMMON_IFC_TYPES = [
@@ -87,6 +88,15 @@ export function DrawingSettingsPanel({ onClose }: DrawingSettingsPanelProps) {
   const removeCustomRule = useViewerStore((s) => s.removeCustomRule);
   const overridesEnabled = useViewerStore((s) => s.overridesEnabled);
   const toggleOverridesEnabled = useViewerStore((s) => s.toggleOverridesEnabled);
+
+  // Object Styles state
+  const objectStyleOverrides = useViewerStore((s) => s.objectStyleOverrides);
+  const setObjectStyleOverride = useViewerStore((s) => s.setObjectStyleOverride);
+  const resetObjectStyleOverride = useViewerStore((s) => s.resetObjectStyleOverride);
+  const resetAllObjectStyleOverrides = useViewerStore((s) => s.resetAllObjectStyleOverrides);
+
+  // Active tab: 'overrides' | 'object-styles'
+  const [activeTab, setActiveTab] = useState<'overrides' | 'object-styles'>('object-styles');
 
   // Expanded sections
   const [presetsOpen, setPresetsOpen] = useState(true);
@@ -148,22 +158,64 @@ export function DrawingSettingsPanel({ onClose }: DrawingSettingsPanelProps) {
           <h2 className="font-semibold text-sm">Drawing Settings</h2>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant={overridesEnabled ? 'default' : 'outline'}
-            size="sm"
-            onClick={toggleOverridesEnabled}
-            className="h-7 text-xs"
-          >
-            {overridesEnabled ? 'Enabled' : 'Disabled'}
-          </Button>
+          {activeTab === 'overrides' && (
+            <Button
+              variant={overridesEnabled ? 'default' : 'outline'}
+              size="sm"
+              onClick={toggleOverridesEnabled}
+              className="h-7 text-xs"
+            >
+              {overridesEnabled ? 'Enabled' : 'Disabled'}
+            </Button>
+          )}
           <Button variant="ghost" size="icon-sm" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
+      {/* Tab bar */}
+      <div className="flex border-b">
+        <button
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+            activeTab === 'object-styles'
+              ? 'border-b-2 border-primary text-primary'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+          onClick={() => setActiveTab('object-styles')}
+        >
+          <Layers className="h-3.5 w-3.5" />
+          Object Styles
+        </button>
+        <button
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+            activeTab === 'overrides'
+              ? 'border-b-2 border-primary text-primary'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+          onClick={() => setActiveTab('overrides')}
+        >
+          <Palette className="h-3.5 w-3.5" />
+          Overrides
+        </button>
+      </div>
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
+
+        {/* ── OBJECT STYLES TAB ─────────────────────────────── */}
+        {activeTab === 'object-styles' && (
+          <ObjectStylesEditor
+            overrides={objectStyleOverrides}
+            onSetOverride={setObjectStyleOverride}
+            onResetOverride={resetObjectStyleOverride}
+            onResetAll={resetAllObjectStyleOverrides}
+          />
+        )}
+
+        {/* ── GRAPHIC OVERRIDES TAB ─────────────────────────── */}
+        {activeTab === 'overrides' && (
+          <>
         {/* Presets Section */}
         <Collapsible open={presetsOpen} onOpenChange={setPresetsOpen}>
           <CollapsibleTrigger asChild>
@@ -277,6 +329,9 @@ export function DrawingSettingsPanel({ onClose }: DrawingSettingsPanelProps) {
             </CollapsibleContent>
           </div>
         </Collapsible>
+        </>
+        )}
+
       </div>
     </div>
   );
@@ -531,6 +586,155 @@ function CustomRuleItem({
           Done
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OBJECT STYLES EDITOR
+// Per-IFC-category line weight, color, hatch configurator (Revit-style).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HATCH_LABELS: Record<string, string> = {
+  none: 'None',
+  diagonal: 'Diagonal lines',
+  cross: 'Cross hatching',
+  horizontal: 'Horizontal lines',
+  vertical: 'Vertical lines',
+  concrete: 'Concrete (dots)',
+  brick: 'Brick pattern',
+};
+
+interface ObjectStylesEditorProps {
+  overrides: Partial<ObjectStylesConfig>;
+  onSetOverride: (ifcType: string, style: Record<string, unknown>) => void;
+  onResetOverride: (ifcType: string) => void;
+  onResetAll: () => void;
+}
+
+function ObjectStylesEditor({ overrides, onSetOverride, onResetOverride, onResetAll }: ObjectStylesEditorProps) {
+  const ifcTypes = Object.keys(DEFAULT_OBJECT_STYLES);
+  const hasOverrides = Object.keys(overrides).length > 0;
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+        <span className="text-xs text-muted-foreground">Per-category line weights, colors & hatches</span>
+        {hasOverrides && (
+          <Button variant="ghost" size="sm" className="h-6 text-xs text-destructive" onClick={onResetAll}>
+            Reset All
+          </Button>
+        )}
+      </div>
+
+      {/* Column headers */}
+      <div className="grid grid-cols-[1fr_48px_56px_56px_64px_28px] gap-1 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wide border-b">
+        <span>Category</span>
+        <span>Vis</span>
+        <span>Color</span>
+        <span>Weight</span>
+        <span>Hatch</span>
+        <span></span>
+      </div>
+
+      {/* Rows */}
+      <div className="overflow-y-auto flex-1">
+        {ifcTypes.map((ifcType) => {
+          const resolved = resolveObjectStyle(ifcType, overrides);
+          const isOverridden = !!overrides[ifcType];
+          return (
+            <ObjectStyleRow
+              key={ifcType}
+              ifcType={ifcType}
+              style={resolved}
+              isOverridden={isOverridden}
+              onUpdate={(updates) => onSetOverride(ifcType, updates)}
+              onReset={() => onResetOverride(ifcType)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface ObjectStyleRowProps {
+  ifcType: string;
+  style: ReturnType<typeof resolveObjectStyle>;
+  isOverridden: boolean;
+  onUpdate: (updates: Record<string, unknown>) => void;
+  onReset: () => void;
+}
+
+function ObjectStyleRow({ ifcType, style, isOverridden, onUpdate, onReset }: ObjectStyleRowProps) {
+  const label = ifcType.replace('Ifc', '');
+  const hatchPattern = style.hatch?.pattern ?? 'none';
+
+  return (
+    <div className={`grid grid-cols-[1fr_48px_56px_56px_64px_28px] gap-1 items-center px-3 py-1.5 border-b border-muted/50 hover:bg-muted/20 ${isOverridden ? 'bg-blue-50/40 dark:bg-blue-950/20' : ''}`}>
+      {/* Category label */}
+      <span className="text-xs font-medium truncate" title={ifcType}>{label}</span>
+
+      {/* Visibility toggle */}
+      <button
+        className={`w-7 h-6 flex items-center justify-center rounded transition-colors ${style.visible ? 'text-foreground' : 'text-muted-foreground/40'}`}
+        title={style.visible ? 'Visible — click to hide' : 'Hidden — click to show'}
+        onClick={() => onUpdate({ visible: !style.visible })}
+      >
+        {style.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+      </button>
+
+      {/* Cut line color swatch */}
+      <div className="flex items-center gap-1">
+        <input
+          type="color"
+          value={style.cutLines.lineColor}
+          title="Cut line color"
+          onChange={(e) => onUpdate({ cutLines: { ...style.cutLines, lineColor: e.target.value } })}
+          className="w-6 h-6 rounded border cursor-pointer p-0"
+        />
+      </div>
+
+      {/* Line weight (mm) */}
+      <input
+        type="number"
+        min={0.05}
+        max={2.0}
+        step={0.05}
+        value={style.cutLines.lineWeight}
+        title="Cut line weight (mm)"
+        onChange={(e) => onUpdate({ cutLines: { ...style.cutLines, lineWeight: parseFloat(e.target.value) || 0.25 } })}
+        className="w-12 h-6 text-xs font-mono text-center border rounded bg-background"
+      />
+
+      {/* Hatch pattern */}
+      <select
+        value={hatchPattern}
+        title="Hatch pattern"
+        onChange={(e) => {
+          const val = e.target.value;
+          if (val === 'none') {
+            onUpdate({ hatch: null });
+          } else {
+            onUpdate({ hatch: { ...(style.hatch ?? { spacing: 3, angle: 45, lineColor: '#000000', lineWeight: 0.18 }), pattern: val } });
+          }
+        }}
+        className="h-6 text-[10px] border rounded bg-background px-1 truncate"
+      >
+        {Object.entries(HATCH_LABELS).map(([val, label]) => (
+          <option key={val} value={val}>{label}</option>
+        ))}
+      </select>
+
+      {/* Reset button */}
+      <button
+        className={`w-6 h-6 flex items-center justify-center rounded transition-opacity ${isOverridden ? 'opacity-100 text-muted-foreground hover:text-destructive' : 'opacity-0 pointer-events-none'}`}
+        title="Reset to default"
+        onClick={onReset}
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   );
 }

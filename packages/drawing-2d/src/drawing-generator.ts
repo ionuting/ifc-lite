@@ -59,9 +59,18 @@ export interface GeneratorOptions {
   includeEdges: boolean;
   /** Merge collinear line segments */
   mergeLines: boolean;
+  /**
+   * IFC type names to exclude from the 2D drawing pipeline entirely.
+   * Defaults to ['IfcOpeningElement'] — voids/openings are not meaningful
+   * in plan/section drawings and produce artefact geometry.
+   * Pass an empty array to include everything.
+   */
+  excludeIfcTypes?: string[];
   /** Progress callback */
   onProgress?: (stage: string, progress: number) => void;
 }
+
+const DEFAULT_EXCLUDED_IFC_TYPES = ['IfcOpeningElement', 'IfcOpeningStandardCase'];
 
 const DEFAULT_OPTIONS: GeneratorOptions = {
   useGPU: true,
@@ -69,6 +78,7 @@ const DEFAULT_OPTIONS: GeneratorOptions = {
   includeProjection: true,
   includeEdges: true,
   mergeLines: true,
+  excludeIfcTypes: DEFAULT_EXCLUDED_IFC_TYPES,
 };
 
 export interface GeneratorProgress {
@@ -114,12 +124,29 @@ export class Drawing2DGenerator {
     options: Partial<GeneratorOptions> = {},
     profiles?: ProfileEntry[],
   ): Promise<Drawing2D> {
-    const opts = { ...DEFAULT_OPTIONS, ...options };
+    const opts = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+      // Merge excludeIfcTypes: caller's list wins; if not provided use default
+      excludeIfcTypes:
+        options.excludeIfcTypes !== undefined
+          ? options.excludeIfcTypes
+          : DEFAULT_EXCLUDED_IFC_TYPES,
+    };
     const startTime = performance.now();
 
     const report = (stage: string, progress: number) => {
       opts.onProgress?.(stage, progress);
     };
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PRE-FILTER: Exclude unwanted IFC types (IfcOpeningElement etc.)
+    // ─────────────────────────────────────────────────────────────────────────
+    const excludeSet = new Set(opts.excludeIfcTypes ?? []);
+    const filteredMeshes =
+      excludeSet.size > 0
+        ? meshes.filter((m) => !m.ifcType || !excludeSet.has(m.ifcType))
+        : meshes;
 
     // ─────────────────────────────────────────────────────────────────────────
     // STAGE 1: Section Cutting
@@ -130,13 +157,13 @@ export class Drawing2DGenerator {
 
     if (opts.useGPU && this.gpuCutter && this.gpuDevice) {
       // GPU path
-      cutSegments = await this.gpuCutter.cutMeshes(meshes, config.plane);
+      cutSegments = await this.gpuCutter.cutMeshes(filteredMeshes, config.plane);
     } else {
       // CPU path
       if (!this.cpuCutter || this.cpuCutter === null) {
         this.cpuCutter = new SectionCutter(config.plane);
       }
-      const cutResult = this.cpuCutter.cutMeshes(meshes);
+      const cutResult = this.cpuCutter.cutMeshes(filteredMeshes);
       cutSegments = cutResult.segments;
     }
 
@@ -181,7 +208,7 @@ export class Drawing2DGenerator {
       if (opts.includeEdges) {
         // Feature edges and silhouettes always come from the mesh edge extractor
         // Extract feature edges from all meshes
-        const allEdges = this.edgeExtractor.extractEdgesFromMeshes(meshes);
+        const allEdges = this.edgeExtractor.extractEdgesFromMeshes(filteredMeshes);
 
         // Filter edges in projection range
         const projectionEdges = this.edgeExtractor.filterEdgesByDepth(
@@ -222,7 +249,7 @@ export class Drawing2DGenerator {
       } else if (!profiles || profiles.length === 0) {
         // Legacy path: no profiles and no edge extraction → use crease edges for projection
         if (opts.includeProjection) {
-          const allEdges = this.edgeExtractor.extractEdgesFromMeshes(meshes);
+          const allEdges = this.edgeExtractor.extractEdgesFromMeshes(filteredMeshes);
           const projectionEdges = this.edgeExtractor.filterEdgesByDepth(
             allEdges,
             config.plane.axis,
@@ -271,7 +298,7 @@ export class Drawing2DGenerator {
 
       // Build depth buffer and classify lines
       this.hiddenLineClassifier.buildDepthBuffer(
-        meshes,
+        filteredMeshes,
         config.plane.axis,
         config.plane.position,
         config.projectionDepth,
@@ -324,7 +351,7 @@ export class Drawing2DGenerator {
         hiddenLineCount,
         silhouetteLineCount,
         polygonCount: cutPolygons.length,
-        totalTriangles: meshes.reduce((sum, m) => sum + m.indices.length / 3, 0),
+        totalTriangles: filteredMeshes.reduce((sum, m) => sum + m.indices.length / 3, 0),
         processingTimeMs,
       },
     };

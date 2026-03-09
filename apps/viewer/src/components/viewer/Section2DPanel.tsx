@@ -12,7 +12,7 @@
  */
 
 import React, { useCallback, useRef, useState, useEffect, useMemo } from 'react';
-import { X, Download, Eye, EyeOff, Maximize2, ZoomIn, ZoomOut, Loader2, Printer, GripVertical, MoreHorizontal, RefreshCw, Pin, PinOff, Palette, Ruler, Trash2, FileText, Shapes, Box, PenTool, Hexagon, Type, Cloud, MousePointer2 } from 'lucide-react';
+import { X, Download, Eye, EyeOff, Maximize2, ZoomIn, ZoomOut, Loader2, Printer, GripVertical, MoreHorizontal, RefreshCw, Pin, PinOff, Palette, Ruler, Trash2, FileText, Shapes, Box, PenTool, Hexagon, Type, Cloud, MousePointer2, Crosshair, Merge, Scissors, Copy as CopyIcon, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -30,11 +30,17 @@ import { SheetSetupPanel } from './SheetSetupPanel';
 import { TitleBlockEditor } from './TitleBlockEditor';
 import { TextAnnotationEditor } from './TextAnnotationEditor';
 import { Drawing2DCanvas } from './Drawing2DCanvas';
+import { DrawingToolsPalette } from './DrawingToolsPalette';
+import { Properties2DPanel } from './Properties2DPanel';
 import { useDrawingGeneration } from '@/hooks/useDrawingGeneration';
 import { useMeasure2D } from '@/hooks/useMeasure2D';
 import { useAnnotation2D } from '@/hooks/useAnnotation2D';
 import { useViewControls } from '@/hooks/useViewControls';
 import { useDrawingExport } from '@/hooks/useDrawingExport';
+import { useBooleanOps2D } from '@/hooks/useBooleanOps2D';
+import { useDrawingShapes2D } from '@/hooks/useDrawingShapes2D';
+import { useSnap2D } from '@/hooks/useSnap2D';
+import { useOffsetHandles2D } from '@/hooks/useOffsetHandles2D';
 
 interface Section2DPanelProps {
   mergedGeometry?: GeometryResult | null;
@@ -134,6 +140,29 @@ export function Section2DPanel({
   const moveAnnotation2D = useViewerStore((s) => s.moveAnnotation2D);
   // Bulk
   const clearAllAnnotations2D = useViewerStore((s) => s.clearAllAnnotations2D);
+
+  // Element selection state
+  const selectedDrawingEntityId = useViewerStore((s) => s.selectedDrawingEntityId);
+  const selectedDrawingEntityIfcType = useViewerStore((s) => s.selectedDrawingEntityIfcType);
+  const selectedDrawingEntityIds = useViewerStore((s) => s.selectedDrawingEntityIds);
+  const setSelectedDrawingEntity = useViewerStore((s) => s.setSelectedDrawingEntity);
+  const clearDrawingEntitySelection = useViewerStore((s) => s.clearDrawingEntitySelection);
+  const addToDrawingEntitySelection = useViewerStore((s) => s.addToDrawingEntitySelection);
+
+  // Object Styles overrides (for SVG export with object styles)
+  const objectStyleOverrides = useViewerStore((s) => s.objectStyleOverrides);
+
+  // Boolean operation result overlay
+  const booleanResultSvgPath = useViewerStore((s) => s.booleanResultSvgPath);
+  const booleanResultLabel = useViewerStore((s) => s.booleanResultLabel);
+
+  // Drawn shapes state
+  const drawnShapes2D = useViewerStore((s) => s.drawnShapes2D);
+  const activeDrawingTool = useViewerStore((s) => s.activeDrawingTool);
+  const selectedShapeId = useViewerStore((s) => s.selectedShapeId);
+  const inProgressPoints = useViewerStore((s) => s.inProgressPoints);
+  const inProgressCursor = useViewerStore((s) => s.inProgressCursor);
+  const toggleProperties2DPanel = useViewerStore((s) => s.toggleProperties2DPanel);
 
   const sectionPlane = useViewerStore((s) => s.sectionPlane);
   const activeTool = useViewerStore((s) => s.activeTool);
@@ -289,8 +318,83 @@ export function Section2DPanel({
     setAnnotation2DCursorPos, setMeasure2DSnapPoint,
   });
 
+  const { snap: snapFn } = useSnap2D({
+    drawing,
+    drawnShapes: drawnShapes2D,
+    scale: viewTransform.scale,
+  });
+
+  const shapeHandlers = useDrawingShapes2D({
+    containerRef,
+    viewTransform,
+    sectionAxis: sectionPlane.axis,
+    snapFn,
+  });
+
+  const offsetHandlers = useOffsetHandles2D({
+    containerRef,
+    viewTransform,
+    sectionAxis: sectionPlane.axis,
+  });
+
   // Unified mouse handlers that dispatch to the right tool
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Drawing tool takes priority
+    if (shapeHandlers.isActive) {
+      shapeHandlers.handleMouseDown(e);
+      return;
+    }
+    // Offset handle drag takes priority over pan/annotation
+    if (offsetHandlers.onHandleMouseDown(e)) return;
+    if (annotation2DActiveTool === 'select-element') {
+      // Element selection via point-in-polygon hit test
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect || !drawing) {
+        measureHandlers.handleMouseDown(e);
+        return;
+      }
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      // Convert canvas coords → drawing coords (inverse of canvas transform)
+      const scaleX = sectionPlane.axis === 'side' ? -viewTransform.scale : viewTransform.scale;
+      const scaleY = sectionPlane.axis === 'down' ? viewTransform.scale : -viewTransform.scale;
+      const drawX = (mouseX - viewTransform.x) / scaleX;
+      const drawY = (mouseY - viewTransform.y) / scaleY;
+
+      // Ray-casting point-in-polygon test
+      const pointInPoly = (px: number, py: number, poly: { x: number; y: number }[]): boolean => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+            inside = !inside;
+          }
+        }
+        return inside;
+      };
+
+      // Multi-select with Shift key
+      let hit: { entityId: number; ifcType: string } | null = null;
+      for (const poly of drawing.cutPolygons) {
+        if (pointInPoly(drawX, drawY, poly.polygon.outer)) {
+          hit = { entityId: poly.entityId, ifcType: poly.ifcType };
+          break;
+        }
+      }
+
+      if (hit) {
+        if (e.shiftKey) {
+          addToDrawingEntitySelection(hit.entityId, hit.ifcType);
+        } else {
+          setSelectedDrawingEntity(hit.entityId, hit.ifcType);
+        }
+      } else if (!e.shiftKey) {
+        clearDrawingEntitySelection();
+      }
+      return;
+    }
     if (annotation2DActiveTool === 'measure') {
       measureHandlers.handleMouseDown(e);
     } else if (annotation2DActiveTool === 'none') {
@@ -302,9 +406,17 @@ export function Section2DPanel({
     } else {
       annotationHandlers.handleMouseDown(e);
     }
-  }, [annotation2DActiveTool, measureHandlers, annotationHandlers]);
+  }, [annotation2DActiveTool, measureHandlers, annotationHandlers, shapeHandlers, offsetHandlers]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) {
+      shapeHandlers.handleMouseMove(e);
+      return;
+    }
+    if (offsetHandlers.isDragging()) {
+      offsetHandlers.handleMouseMove(e);
+      return;
+    }
     // If dragging an annotation, let the annotation handler handle it
     if (annotationHandlers.isDraggingRef.current) {
       annotationHandlers.handleMouseMove(e);
@@ -318,9 +430,14 @@ export function Section2DPanel({
   }, [annotation2DActiveTool, measureHandlers, annotationHandlers]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) {
+      shapeHandlers.handleMouseUp(e);
+      return;
+    }
+    offsetHandlers.handleMouseUp();
     annotationHandlers.handleMouseUp(e);
     measureHandlers.handleMouseUp();
-  }, [measureHandlers, annotationHandlers]);
+  }, [measureHandlers, annotationHandlers, shapeHandlers, offsetHandlers]);
 
   const handleMouseLeave = useCallback(() => {
     measureHandlers.handleMouseLeave();
@@ -331,15 +448,22 @@ export function Section2DPanel({
   }, [measureHandlers]);
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) {
+      shapeHandlers.handleDoubleClick(e);
+      return;
+    }
     annotationHandlers.handleDoubleClick(e);
-  }, [annotationHandlers]);
+  }, [annotationHandlers, shapeHandlers]);
 
   const { formatDistance, handleExportSVG, handlePrint } = useDrawingExport({
     drawing, displayOptions, sectionPlane, activePresetId,
     entityColorMap, overridesEnabled, overrideEngine,
     measure2DResults, polygonArea2DResults, textAnnotations2D, cloudAnnotations2D,
     sheetEnabled, activeSheet,
+    objectStyleOverrides,
   });
+
+  const { applyUnion, applyDifference, applyIntersection, clearResult: clearBooleanResult, canRun: canRunBoolean } = useBooleanOps2D();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // CALLBACKS
@@ -385,6 +509,27 @@ export function Section2DPanel({
     setTextAnnotation2DEditing(null);
   }, [textAnnotations2D, removeTextAnnotation2D, setTextAnnotation2DEditing]);
 
+  // Global keyDown handler: Esc/Enter for shape tools + keyboard shortcuts for palette
+  const setActiveDrawingTool = useViewerStore((s) => s.setActiveDrawingTool);
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Pass to shape handlers first
+      shapeHandlers.handleKeyDown(e);
+      // Palette keyboard shortcuts (only when no input is focused)
+      if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+      if (e.key === 'v' || e.key === 'V') { setAnnotation2DActiveTool('none'); setActiveDrawingTool('none'); }
+      else if (e.key === 'e' || e.key === 'E') setAnnotation2DActiveTool('select-element');
+      else if (e.key === 'l' || e.key === 'L') setActiveDrawingTool('line');
+      else if (e.key === 'p' || e.key === 'P') setActiveDrawingTool('polyline');
+      else if (e.key === 'r' || e.key === 'R') setActiveDrawingTool('rectangle');
+      else if (e.key === 'c' || e.key === 'C') setActiveDrawingTool('circle');
+      else if (e.key === 'a' || e.key === 'A') setActiveDrawingTool('arc');
+      else if (e.key === 'i' || e.key === 'I') toggleProperties2DPanel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [shapeHandlers, setAnnotation2DActiveTool, setActiveDrawingTool, toggleProperties2DPanel]);
+
   // Check if any annotations exist
   const hasAnnotations = measure2DResults.length > 0 ||
     polygonArea2DResults.length > 0 ||
@@ -393,8 +538,11 @@ export function Section2DPanel({
 
   // Cursor style based on active tool
   const cursorClass = useMemo(() => {
+    if (activeDrawingTool !== 'none') return 'cursor-crosshair';
     if (selectedAnnotation2D && annotation2DActiveTool === 'none') return 'cursor-move';
     switch (annotation2DActiveTool) {
+      case 'select-element':
+        return 'cursor-crosshair';
       case 'measure':
       case 'polygon-area':
       case 'cloud':
@@ -551,6 +699,11 @@ export function Section2DPanel({
                     <MousePointer2 className="h-4 w-4 mr-2" />
                     Select / Pan
                     {annotation2DActiveTool === 'none' && <span className="ml-auto text-xs text-primary">Active</span>}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setAnnotation2DActiveTool(annotation2DActiveTool === 'select-element' ? 'none' : 'select-element')}>
+                    <Crosshair className="h-4 w-4 mr-2" />
+                    Select Element
+                    {annotation2DActiveTool === 'select-element' && <span className="ml-auto text-xs text-primary">Active</span>}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setAnnotation2DActiveTool(annotation2DActiveTool === 'measure' ? 'none' : 'measure')}>
@@ -848,7 +1001,68 @@ export function Section2DPanel({
               cloudAnnotationPoints={cloudAnnotation2DPoints}
               cloudAnnotations={cloudAnnotations2D}
               selectedAnnotation={selectedAnnotation2D}
+              selectedEntityIds={selectedDrawingEntityIds.length > 0 ? new Set(selectedDrawingEntityIds) : undefined}
+              drawnShapes2D={drawnShapes2D}
+              inProgressPoints={inProgressPoints}
+              inProgressCursor={inProgressCursor}
+              activeDrawingTool={activeDrawingTool}
+              selectedShapeId={selectedShapeId}
+              snapResult={shapeHandlers.currentSnap}
+              offsetHandles={offsetHandlers.handles}
             />
+
+            {/* Boolean operations toolbar — visible when 2+ elements are selected */}
+            {annotation2DActiveTool === 'select-element' && selectedDrawingEntityIds.length >= 2 && (
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 bg-background/90 border rounded-lg px-2 py-1 shadow-md">
+                <span className="text-[10px] text-muted-foreground mr-1">{selectedDrawingEntityIds.length} selected:</span>
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={applyUnion} disabled={!canRunBoolean} title="Union of selected shapes">
+                  <Merge className="h-3.5 w-3.5" /> Union
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={applyDifference} disabled={!canRunBoolean} title="Subtract shapes [1..n] from shape [0]">
+                  <Scissors className="h-3.5 w-3.5" /> Diff
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={applyIntersection} disabled={!canRunBoolean} title="Intersection of all selected shapes">
+                  <CopyIcon className="h-3.5 w-3.5" /> Intersect
+                </Button>
+              </div>
+            )}
+
+            {/* Boolean operation result SVG overlay */}
+            {booleanResultSvgPath && (() => {
+              const scaleX = sectionPlane.axis === 'side' ? -viewTransform.scale : viewTransform.scale;
+              const scaleY = sectionPlane.axis === 'down' ? viewTransform.scale : -viewTransform.scale;
+              return (
+                <>
+                  <svg
+                    className="absolute inset-0 pointer-events-none z-10 w-full h-full"
+                    style={{ overflow: 'visible' }}
+                  >
+                    <g transform={`translate(${viewTransform.x} ${viewTransform.y}) scale(${scaleX} ${scaleY})`}>
+                      <path
+                        d={booleanResultSvgPath}
+                        fill="rgba(34, 197, 94, 0.25)"
+                        stroke="rgba(34, 197, 94, 0.9)"
+                        strokeWidth={2 / viewTransform.scale}
+                        fillRule="evenodd"
+                      />
+                    </g>
+                    {booleanResultLabel && (
+                      <text x="50%" y="22" textAnchor="middle" fontSize="11" fill="#166534" fontWeight="600">
+                        Result: {booleanResultLabel}
+                      </text>
+                    )}
+                  </svg>
+                  <button
+                    className="absolute top-1.5 right-10 z-20 p-0.5 bg-background/90 rounded-full border shadow hover:bg-background"
+                    onClick={clearBooleanResult}
+                    title="Clear boolean result"
+                  >
+                    <XCircle className="h-4 w-4 text-green-700" />
+                  </button>
+                </>
+              );
+            })()}
+
             {/* Subtle updating indicator - shows while regenerating without hiding the drawing */}
             {isRegenerating && (
               <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-background/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-muted-foreground">
@@ -858,6 +1072,14 @@ export function Section2DPanel({
             )}
           </>
         )}
+
+        {/* ── Drawing Tools Palette (left-side vertical toolbar) ── */}
+        {status === 'ready' && drawing && (
+          <DrawingToolsPalette onToggleProperties={toggleProperties2DPanel} />
+        )}
+
+        {/* ── Properties Panel (right-side slide-in) ── */}
+        <Properties2DPanel />
 
         {/* Text Annotation Editor Overlay */}
         {textAnnotation2DEditing && (() => {
@@ -922,6 +1144,32 @@ export function Section2DPanel({
           <div className="absolute bottom-2 right-2 pointer-events-none z-10">
             <div className="text-[10px] text-black bg-white/80 px-1.5 py-0.5 rounded">
               {selectedAnnotation2D.type === 'text' ? 'Del = delete · Drag to move · Double-click to edit' : 'Del = delete · Drag to move'} · Esc = deselect
+            </div>
+          </div>
+        )}
+
+        {/* Element selection info bar */}
+        {annotation2DActiveTool === 'select-element' && selectedDrawingEntityId !== null && (
+          <div className="absolute bottom-0 left-0 right-0 pointer-events-none z-10 flex items-center justify-between bg-background/90 border-t px-3 py-1.5 text-xs">
+            <div className="flex items-center gap-3">
+              <Crosshair className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+              <span className="font-mono text-muted-foreground">#{selectedDrawingEntityId}</span>
+              {selectedDrawingEntityIfcType && (
+                <span className="font-medium">{selectedDrawingEntityIfcType}</span>
+              )}
+              {selectedDrawingEntityIds.length > 1 && (
+                <span className="text-muted-foreground">+{selectedDrawingEntityIds.length - 1} more (Shift+click)</span>
+              )}
+            </div>
+            <span className="text-muted-foreground">Shift+click = multi-select · Click empty = deselect</span>
+          </div>
+        )}
+
+        {/* Select-element tool tip when nothing is selected */}
+        {annotation2DActiveTool === 'select-element' && selectedDrawingEntityId === null && (
+          <div className="absolute bottom-2 right-2 pointer-events-none z-10">
+            <div className="text-[10px] text-black bg-white/80 px-1.5 py-0.5 rounded">
+              Click an element to select · Shift+click = multi-select
             </div>
           </div>
         )}

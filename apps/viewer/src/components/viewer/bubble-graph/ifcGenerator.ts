@@ -119,10 +119,14 @@ export function generateIfcFromGraph(
 
       creator.addIfcColumn(storeyId, {
         Name: `COL-${ax.name}`,
-        Position: [posX, posY, bottomElevM],
+        Position: [
+          posX + mm((ax.properties.offsetX as number) ?? 0),
+          posY + mm((ax.properties.offsetY as number) ?? 0),
+          bottomElevM - mm((ax.properties.offsetBase as number) ?? 0),
+        ],
         Width:  geomDim(colType, 'width',  0.25),
         Depth:  geomDim(colType, 'depth',  0.25),
-        Height: storeyH,
+        Height: storeyH + mm((ax.properties.offsetBase as number) ?? 0) + mm((ax.properties.offsetTop as number) ?? 0),
       });
     }
 
@@ -177,6 +181,14 @@ export function generateIfcFromGraph(
       const dirX = wLen > 0 ? (wxB - wxA) / wLen : 1;
       const dirY = wLen > 0 ? (wyB - wyA) / wLen : 0;
 
+      // Apply endpoint offsets along wall direction
+      const wOS = mm((wall.properties.offsetStart as number) ?? 0);
+      const wOE = mm((wall.properties.offsetEnd   as number) ?? 0);
+      const wStartX = wxA - wOS * dirX;
+      const wStartY = wyA - wOS * dirY;
+      const wEndX   = wxB + wOE * dirX;
+      const wEndY   = wyB + wOE * dirY;
+
       // Window / door nodes directly connected to this wall node
       const openingNodes = nodes.filter(
         (n) => neighbors.includes(n.id) && (n.type === 'window' || n.type === 'door'),
@@ -209,8 +221,8 @@ export function generateIfcFromGraph(
 
       creator.addIfcWall(storeyId, {
         Name:      wall.name,
-        Start:     [wxA, wyA, bottomElevM],
-        End:       [wxB, wyB, bottomElevM],
+        Start:     [wStartX, wStartY, bottomElevM],
+        End:       [wEndX,   wEndY,   bottomElevM],
         Thickness: thickness,
         Height:    wallHeight,
         Openings:  openings.length > 0 ? openings : undefined,
@@ -249,8 +261,8 @@ export function generateIfcFromGraph(
       if (hasBeam) {
         creator.addIfcBeam(storeyId, {
           Name:   `BM-${wall.name}`,
-          Start:  [wxA, wyA, bottomElevM + wallHeight],
-          End:    [wxB, wyB, bottomElevM + wallHeight],
+          Start:  [wStartX, wStartY, bottomElevM + wallHeight],
+          End:    [wEndX,   wEndY,   bottomElevM + wallHeight],
           Width:  autoBeamW,
           Height: autoBeamH,
         });
@@ -270,10 +282,35 @@ export function generateIfcFromGraph(
       const beamWidth  = geomDim(beamType, 'width',  0.3);
       const beamHeight = geomDim(beamType, 'height', 0.6);
 
+      // Endpoint positions with axis + vertical offsets
+      let bxA = mm(axA.x), byA = mm(axA.y);
+      let bxB = mm(axB.x), byB = mm(axB.y);
+      if (buildingAxes) {
+        const gxA = axA.properties.gridX as number | undefined;
+        const gyA = axA.properties.gridY as number | undefined;
+        if (gxA != null && gyA != null && gxA < buildingAxes.xValues.length && gyA < buildingAxes.yValues.length) {
+          bxA = mm(buildingAxes.xValues[gxA]);
+          byA = mm(buildingAxes.yValues[gyA]);
+        }
+        const gxB = axB.properties.gridX as number | undefined;
+        const gyB = axB.properties.gridY as number | undefined;
+        if (gxB != null && gyB != null && gxB < buildingAxes.xValues.length && gyB < buildingAxes.yValues.length) {
+          bxB = mm(buildingAxes.xValues[gxB]);
+          byB = mm(buildingAxes.yValues[gyB]);
+        }
+      }
+      const bLen = Math.hypot(bxB - bxA, byB - byA);
+      const bdirX = bLen > 0 ? (bxB - bxA) / bLen : 1;
+      const bdirY = bLen > 0 ? (byB - byA) / bLen : 0;
+      const bOS  = mm((beam.properties.offsetStart         as number) ?? 0);
+      const bOE  = mm((beam.properties.offsetEnd           as number) ?? 0);
+      const bOZS = mm((beam.properties.offsetVerticalStart as number) ?? 0);
+      const bOZE = mm((beam.properties.offsetVerticalEnd   as number) ?? 0);
+
       creator.addIfcBeam(storeyId, {
         Name:   beam.name,
-        Start:  [mm(axA.x), mm(axA.y), topElevM],
-        End:    [mm(axB.x), mm(axB.y), topElevM],
+        Start:  [bxA - bOS * bdirX, byA - bOS * bdirY, topElevM + bOZS],
+        End:    [bxB + bOE * bdirX, byB + bOE * bdirY, topElevM + bOZE],
         Width:  beamWidth,
         Height: beamHeight,
       });

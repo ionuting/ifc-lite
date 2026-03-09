@@ -16,7 +16,7 @@
  *  - Toolbar: regenerate, zoom controls, export
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ZoomIn,
   ZoomOut,
@@ -25,12 +25,21 @@ import {
   Loader2,
   Download,
   AlertTriangle,
+  Merge,
+  Scissors,
+  Copy as CopyIcon,
 } from 'lucide-react';
 import { GraphicOverrideEngine, type SVGExportOptions } from '@ifc-lite/drawing-2d';
 import { cn } from '@/lib/utils';
 import { useViewerStore } from '@/store';
 import { Drawing2DCanvas } from './Drawing2DCanvas';
+import { DrawingToolsPalette } from './DrawingToolsPalette';
+import { Properties2DPanel } from './Properties2DPanel';
 import { useViewControls } from '@/hooks/useViewControls';
+import { useDrawingShapes2D } from '@/hooks/useDrawingShapes2D';
+import { useSnap2D } from '@/hooks/useSnap2D';
+import { useBooleanOps2D } from '@/hooks/useBooleanOps2D';
+import { useOffsetHandles2D } from '@/hooks/useOffsetHandles2D';
 
 interface ViewDrawingTabProps {
   viewId: string;
@@ -50,6 +59,19 @@ export function ViewDrawingTab({ viewId }: ViewDrawingTabProps) {
   const overridesEnabled  = useViewerStore((s) => s.overridesEnabled);
   const getActiveOverrideRules = useViewerStore((s) => s.getActiveOverrideRules);
   const sectionPlane      = useViewerStore((s) => s.sectionPlane);
+
+  // Drawing tool state
+  const drawnShapes2D             = useViewerStore((s) => s.drawnShapes2D);
+  const activeDrawingTool         = useViewerStore((s) => s.activeDrawingTool);
+  const selectedShapeId           = useViewerStore((s) => s.selectedShapeId);
+  const inProgressPoints          = useViewerStore((s) => s.inProgressPoints);
+  const inProgressCursor          = useViewerStore((s) => s.inProgressCursor);
+  const toggleProperties2DPanel   = useViewerStore((s) => s.toggleProperties2DPanel);
+  const properties2DPanelVisible  = useViewerStore((s) => s.properties2DPanelVisible);
+  const setActiveDrawingTool      = useViewerStore((s) => s.setActiveDrawingTool);
+  const selectedDrawingEntityIds  = useViewerStore((s) => s.selectedDrawingEntityIds);
+  const booleanResultSvgPath      = useViewerStore((s) => s.booleanResultSvgPath);
+  const booleanResultLabel        = useViewerStore((s) => s.booleanResultLabel);
 
   // ─── Activate view on mount / viewId change ──────────────────────────────
   useEffect(() => {
@@ -127,12 +149,69 @@ export function ViewDrawingTab({ viewId }: ViewDrawingTabProps) {
     cachedSheetTransformRef,
   });
 
+  // ─── Snap + drawing shape hooks ─────────────────────────────────────────
+  const { snap: snapFn } = useSnap2D({
+    drawing,
+    drawnShapes: drawnShapes2D,
+    scale: viewTransform.scale,
+  });
+
+  const shapeHandlers = useDrawingShapes2D({
+    containerRef,
+    viewTransform,
+    sectionAxis: sectionPlane.axis,
+    snapFn,
+  });
+
+  const offsetHandlers = useOffsetHandles2D({
+    containerRef,
+    viewTransform,
+    sectionAxis: sectionPlane.axis,
+  });
+
+  const { applyUnion, applyDifference, applyIntersection, canRun: canRunBoolean } = useBooleanOps2D();
+
+  // ─── Keyboard shortcuts ───────────────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      shapeHandlers.handleKeyDown(e);
+      if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+      if (e.key === 'v' || e.key === 'V') setActiveDrawingTool('none');
+      else if (e.key === 'l' || e.key === 'L') setActiveDrawingTool('line');
+      else if (e.key === 'p' || e.key === 'P') setActiveDrawingTool('polyline');
+      else if (e.key === 'r' || e.key === 'R') setActiveDrawingTool('rectangle');
+      else if (e.key === 'c' || e.key === 'C') setActiveDrawingTool('circle');
+      else if (e.key === 'a' || e.key === 'A') setActiveDrawingTool('arc');
+      else if (e.key === 'i' || e.key === 'I') toggleProperties2DPanel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [shapeHandlers, setActiveDrawingTool, toggleProperties2DPanel]);
+
   // Middle-mouse / alt+left pan
   const panStartRef = useRef<{mx: number; my: number; tx: number; ty: number} | null>(null);
   const transformRef = useRef(viewTransform);
   transformRef.current = viewTransform;
 
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) { shapeHandlers.handleMouseMove(e); return; }
+    if (offsetHandlers.isDragging()) { offsetHandlers.handleMouseMove(e); return; }
+  }, [shapeHandlers, offsetHandlers]);
+
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) { shapeHandlers.handleMouseUp(e); return; }
+    offsetHandlers.handleMouseUp();
+  }, [shapeHandlers, offsetHandlers]);
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (shapeHandlers.isActive) { shapeHandlers.handleDoubleClick?.(e); return; }
+  }, [shapeHandlers]);
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Drawing tool takes priority over pan
+    if (shapeHandlers.isActive) { shapeHandlers.handleMouseDown(e); return; }
+    // Offset handle drag takes priority over pan
+    if (offsetHandlers.onHandleMouseDown(e)) return;
     const isMiddle = e.button === 1;
     const isAltLeft = e.button === 0 && e.altKey;
     if (!isMiddle && !isAltLeft) return;
@@ -156,7 +235,7 @@ export function ViewDrawingTab({ viewId }: ViewDrawingTabProps) {
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [setViewTransform]);
+  }, [setViewTransform, shapeHandlers, offsetHandlers]);
 
   // ─── SVG export ──────────────────────────────────────────────────────────
   const handleExport = useCallback(async () => {
@@ -234,8 +313,12 @@ export function ViewDrawingTab({ viewId }: ViewDrawingTabProps) {
       {/* Canvas area */}
       <div
         ref={containerRef}
-        className="flex-1 min-h-0 relative overflow-hidden select-none cursor-default"
+        className={cn('flex-1 min-h-0 relative overflow-hidden select-none', activeDrawingTool !== 'none' ? 'cursor-crosshair' : 'cursor-default')}
         onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => { /* no-op: shape handlers don't expose a leave handler */ }}
+        onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
       >
         {/* Progress overlay */}
@@ -282,8 +365,50 @@ export function ViewDrawingTab({ viewId }: ViewDrawingTabProps) {
             entityColorMap={entityColorMap}
             useIfcMaterials={false}
             sectionAxis={sectionPlane.axis}
+            drawnShapes2D={drawnShapes2D}
+            inProgressPoints={inProgressPoints}
+            inProgressCursor={inProgressCursor}
+            activeDrawingTool={activeDrawingTool}
+            selectedShapeId={selectedShapeId}
+            snapResult={shapeHandlers.currentSnap}
+            offsetHandles={offsetHandlers.handles}
           />
         )}
+
+        {/* Boolean result SVG overlay */}
+        {booleanResultSvgPath && (() => {
+          const scaleX = sectionPlane.axis === 'side' ? -viewTransform.scale : viewTransform.scale;
+          const scaleY = sectionPlane.axis === 'down' ? viewTransform.scale : -viewTransform.scale;
+          return (
+            <svg className="absolute inset-0 pointer-events-none z-10 w-full h-full" style={{ overflow: 'visible' }}>
+              <g transform={`translate(${viewTransform.x} ${viewTransform.y}) scale(${scaleX} ${scaleY})`}>
+                <path d={booleanResultSvgPath} fill="rgba(34,197,94,0.25)" stroke="rgba(34,197,94,0.9)" strokeWidth={0.02} />
+              </g>
+            </svg>
+          );
+        })()}
+
+        {/* Boolean operations toolbar */}
+        {selectedDrawingEntityIds.length >= 2 && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 bg-background/90 border rounded-lg px-2 py-1 shadow-md text-xs">
+            <span className="text-muted-foreground mr-1">{selectedDrawingEntityIds.length} selected:</span>
+            <button className="h-7 px-2 rounded border hover:bg-muted flex items-center gap-1 disabled:opacity-40" onClick={applyUnion} disabled={!canRunBoolean} title="Union">
+              <Merge className="h-3.5 w-3.5" /> Union
+            </button>
+            <button className="h-7 px-2 rounded border hover:bg-muted flex items-center gap-1 disabled:opacity-40" onClick={applyDifference} disabled={!canRunBoolean} title="Difference">
+              <Scissors className="h-3.5 w-3.5" /> Diff
+            </button>
+            <button className="h-7 px-2 rounded border hover:bg-muted flex items-center gap-1 disabled:opacity-40" onClick={applyIntersection} disabled={!canRunBoolean} title="Intersect">
+              <CopyIcon className="h-3.5 w-3.5" /> Intersect
+            </button>
+          </div>
+        )}
+
+        {/* Drawing tools palette */}
+        <DrawingToolsPalette />
+
+        {/* Properties panel */}
+        {properties2DPanelVisible && <Properties2DPanel />}
       </div>
     </div>
   );

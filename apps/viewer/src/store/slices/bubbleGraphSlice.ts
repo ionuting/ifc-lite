@@ -10,6 +10,14 @@
 
 import type { StateCreator } from 'zustand';
 
+// ─── Minimal node shape (avoids direct @xyflow/react dep in store) ──────────
+
+export interface FlowNode {
+  id: string;
+  type?: string;
+  data: Record<string, unknown>;
+}
+
 // ─── Node / Edge types ────────────────────────────────────────────────────
 
 export interface BubbleGraphNode {
@@ -50,6 +58,21 @@ export interface BubbleGraphSlice {
   /** Currently active storey tab (null = show all) */
   activeStoreyId: string | null;
 
+  /** ReactFlow node snapshots synced from NodeEditorPanel */
+  flowNodes: FlowNode[];
+  setFlowNodes: (nodes: FlowNode[]) => void;
+
+  /** nodeId → IFC expressId(s) from the last successful compile */
+  nodeExprIds: Map<string, number[]>;
+  setNodeExprIds: (map: Map<string, number[]>) => void;
+
+  /**
+   * Callback registered by NodeEditorPanel so external code (e.g. 2D canvas
+   * handles) can update a node's data and trigger auto-recompile.
+   */
+  updateFlowNodeData: ((nodeId: string, data: Record<string, unknown>) => void) | null;
+  registerFlowNodeDataUpdater: (fn: ((nodeId: string, data: Record<string, unknown>) => void) | null) => void;
+
   setBubbleGraph: (nodes: BubbleGraphNode[], edges: BubbleGraphEdge[]) => void;
   setBubbleGraphPanelVisible: (visible: boolean) => void;
   toggleBubbleGraphPanel: () => void;
@@ -65,6 +88,13 @@ export const createBubbleGraphSlice: StateCreator<BubbleGraphSlice, [], [], Bubb
   bubbleGraphPanelVisible: false,
   buildingAxes: { xValues: [], yValues: [] },
   activeStoreyId: null,
+  flowNodes: [],
+  nodeExprIds: new Map(),
+  updateFlowNodeData: null,
+
+  setFlowNodes: (nodes) => set({ flowNodes: nodes }),
+  setNodeExprIds: (map) => set({ nodeExprIds: map }),
+  registerFlowNodeDataUpdater: (fn) => set({ updateFlowNodeData: fn }),
 
   setBubbleGraph: (nodes, edges) => set({ bubbleGraphNodes: nodes, bubbleGraphEdges: edges }),
   setBubbleGraphPanelVisible: (visible) => set({ bubbleGraphPanelVisible: visible }),

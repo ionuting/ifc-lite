@@ -32,6 +32,18 @@ export function ColumnNode({ id, data, selected }: NodeProps<ColumnFlowNode>) {
       <NodeField label="Height">
         <NodeInput type="number" value={data.height} onChange={v => upd({ height: Number(v) })} step={0.5} />
       </NodeField>
+      <NodeField label="Off.X">
+        <NodeInput type="number" value={data.offsetX ?? 0} onChange={v => upd({ offsetX: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Off.Y">
+        <NodeInput type="number" value={data.offsetY ?? 0} onChange={v => upd({ offsetY: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Off.Base">
+        <NodeInput type="number" value={data.offsetBase ?? 0} onChange={v => upd({ offsetBase: Number(v) })} step={0.05} />
+      </NodeField>
+      <NodeField label="Off.Top">
+        <NodeInput type="number" value={data.offsetTop ?? 0} onChange={v => upd({ offsetTop: Number(v) })} step={0.05} />
+      </NodeField>
       <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '35%' }} title="Storey" />
       <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '70%' }} title="Transform list" />
     </BaseNode>

@@ -127,9 +127,25 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
   };
 
   const { loadFile } = useIfc();
-  const setNodeEditorPanelVisible = useViewerStore((s) => s.setNodeEditorPanelVisible);
-  const toggleTypeVisibility = useViewerStore((s) => s.toggleTypeVisibility);
-  const typeVisibility = useViewerStore((s) => s.typeVisibility);
+  const setNodeEditorPanelVisible    = useViewerStore((s) => s.setNodeEditorPanelVisible);
+  const toggleTypeVisibility         = useViewerStore((s) => s.toggleTypeVisibility);
+  const typeVisibility               = useViewerStore((s) => s.typeVisibility);
+  const setFlowNodes                 = useViewerStore((s) => s.setFlowNodes);
+  const setNodeExprIds               = useViewerStore((s) => s.setNodeExprIds);
+  const registerFlowNodeDataUpdater  = useViewerStore((s) => s.registerFlowNodeDataUpdater);
+
+  // Sync current ReactFlow nodes to the store so 2D canvas handles can read them
+  useEffect(() => {
+    setFlowNodes(nodes.map(n => ({ id: n.id, type: n.type, data: n.data as Record<string, unknown> })));
+  }, [nodes, setFlowNodes]);
+
+  // Register the updater so the 2D canvas can drive parametric node changes
+  useEffect(() => {
+    registerFlowNodeDataUpdater((nodeId, newData) => {
+      setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...newData } } : n));
+    });
+    return () => registerFlowNodeDataUpdater(null);
+  }, [registerFlowNodeDataUpdater, setNodes]);
 
   // ── Ctrl+D: duplicate selected nodes ───────────────────────────────────
   useEffect(() => {
@@ -169,13 +185,14 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
     setStatus('compiling');
     setStatusMsg('');
     try {
-      const content = await compileGraphToIfc(nodes, edges);
-      if (!content) {
+      const result = await compileGraphToIfc(nodes, edges);
+      if (!result) {
         setStatus('error');
         setStatusMsg('Add a Project node first');
         return;
       }
-      const blob = new Blob([content], { type: 'application/x-step' });
+      setNodeExprIds(result.nodeExprIds);
+      const blob = new Blob([result.content], { type: 'application/x-step' });
       const file = new File([blob], 'node-graph.ifc', { type: 'application/x-step', lastModified: Date.now() });
       await loadFile(file);
       // loadFile resets store; restore node editor visibility
@@ -190,7 +207,7 @@ function NodeEditorPanelInner({ visible, onClose }: NodeEditorPanelInnerProps) {
       setStatus('error');
       setStatusMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [nodes, edges, loadFile, setNodeEditorPanelVisible, toggleTypeVisibility, typeVisibility]);
+  }, [nodes, edges, loadFile, setNodeEditorPanelVisible, toggleTypeVisibility, typeVisibility, setNodeExprIds]);
 
   // ── Auto-compile with debounce ──────────────────────────────────────────
   useEffect(() => {

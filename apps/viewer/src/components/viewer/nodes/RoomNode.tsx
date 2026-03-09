@@ -32,6 +32,9 @@ export function RoomNode({ id, data, selected }: NodeProps<RoomFlowNode>) {
       <NodeField label="Height">
         <NodeInput type="number" value={data.height} onChange={v => upd({ height: Number(v) })} step={0.1} />
       </NodeField>
+      <NodeField label="Off.Outer">
+        <NodeInput type="number" value={data.offsetOuter ?? 0} onChange={v => upd({ offsetOuter: Number(v) })} step={0.05} />
+      </NodeField>
       <Handle type="target" position={Position.Left} style={{ background: '#a855f7', top: '35%' }} title="Storey" />
       <Handle type="target" id="transform" position={Position.Left} style={{ background: '#7c3aed', top: '70%' }} title="Transform list" />
     </BaseNode>

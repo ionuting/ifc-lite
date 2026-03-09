@@ -12,7 +12,8 @@ import {
 import { formatDistance } from './tools/formatDistance';
 import { formatArea, computePolygonCentroid } from './tools/computePolygonArea';
 import { drawCloudOnCanvas } from './tools/cloudPathGenerator';
-import type { PolygonArea2DResult, TextAnnotation2D, CloudAnnotation2D, Annotation2DTool, Point2D, SelectedAnnotation2D } from '@/store/slices/drawing2DSlice';
+import type { PolygonArea2DResult, TextAnnotation2D, CloudAnnotation2D, Annotation2DTool, Point2D, SelectedAnnotation2D, DrawnShape2D, DrawingTool2D } from '@/store/slices/drawing2DSlice';
+import type { OffsetHandle } from '@/hooks/useOffsetHandles2D';
 
 // Fill colors for IFC types (architectural convention)
 const IFC_TYPE_FILL_COLORS: Record<string, string> = {
@@ -97,6 +98,22 @@ interface Drawing2DCanvasProps {
   cloudAnnotations?: CloudAnnotation2D[];
   // Selection
   selectedAnnotation?: SelectedAnnotation2D | null;
+  /** Entity IDs selected via select-element tool (highlighted) */
+  selectedEntityIds?: Set<number>;
+  /** Drawn shapes placed by the user */
+  drawnShapes2D?: DrawnShape2D[];
+  /** In-progress shape points */
+  inProgressPoints?: Point2D[];
+  /** Live cursor position for in-progress preview */
+  inProgressCursor?: Point2D | null;
+  /** Active drawing tool (for preview rendering) */
+  activeDrawingTool?: DrawingTool2D;
+  /** ID of selected drawn shape (shows handles) */
+  selectedShapeId?: string | null;
+  /** Current snap result — draws indicator on canvas */
+  snapResult?: { point: { x: number; y: number }; type: 'vertex' | 'midpoint' | 'edge' | null } | null;
+  /** Parametric offset handles to render (from useOffsetHandles2D) */
+  offsetHandles?: OffsetHandle[];
 }
 
 export function Drawing2DCanvas({
@@ -126,6 +143,14 @@ export function Drawing2DCanvas({
   cloudAnnotationPoints = [],
   cloudAnnotations = [],
   selectedAnnotation = null,
+  selectedEntityIds,
+  drawnShapes2D = [],
+  inProgressPoints = [],
+  inProgressCursor = null,
+  activeDrawingTool = 'none',
+  selectedShapeId = null,
+  snapResult = null,
+  offsetHandles = [],
 }: Drawing2DCanvasProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -944,6 +969,235 @@ export function Drawing2DCanvas({
         ctx.setLineDash([]);
       }
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // 4. SELECTION HIGHLIGHT (drawn on top of lines, in drawing coords)
+      // ═══════════════════════════════════════════════════════════════════════
+      if (selectedEntityIds?.size) {
+        for (const polygon of drawing.cutPolygons) {
+          if (!selectedEntityIds.has(polygon.entityId)) continue;
+          ctx.fillStyle = 'rgba(59, 130, 246, 0.22)';
+          ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+          ctx.lineWidth = 2 / transform.scale;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          if (polygon.polygon.outer.length > 0) {
+            ctx.moveTo(polygon.polygon.outer[0].x, polygon.polygon.outer[0].y);
+            for (let i = 1; i < polygon.polygon.outer.length; i++) {
+              ctx.lineTo(polygon.polygon.outer[i].x, polygon.polygon.outer[i].y);
+            }
+            ctx.closePath();
+          }
+          ctx.fill('evenodd');
+          ctx.stroke();
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // 5. DRAWN SHAPES (user-placed geometry, in drawing coords)
+      // ═══════════════════════════════════════════════════════════════════════
+
+      /** Render a single shape path onto ctx (drawing coords already applied) */
+      const renderShape = (
+        pts: Point2D[],
+        type: DrawnShape2D['type'] | 'preview',
+        strokeColor: string,
+        strokeWidth: number,
+        fillColor: string | null,
+        isSelected: boolean,
+      ) => {
+        if (pts.length === 0) return;
+        ctx.save();
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = strokeWidth;
+        ctx.setLineDash([]);
+        if (isSelected) {
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = strokeWidth * 1.6;
+        }
+
+        ctx.beginPath();
+        switch (type) {
+          case 'line':
+          case 'polyline':
+          case 'preview': {
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            break;
+          }
+          case 'rectangle': {
+            if (pts.length < 2) { ctx.restore(); return; }
+            const rx = Math.min(pts[0].x, pts[1].x);
+            const ry = Math.min(pts[0].y, pts[1].y);
+            const rw = Math.abs(pts[1].x - pts[0].x);
+            const rh = Math.abs(pts[1].y - pts[0].y);
+            ctx.rect(rx, ry, rw, rh);
+            break;
+          }
+          case 'circle': {
+            if (pts.length < 2) { ctx.restore(); return; }
+            const radius = Math.sqrt((pts[1].x - pts[0].x) ** 2 + (pts[1].y - pts[0].y) ** 2);
+            ctx.arc(pts[0].x, pts[0].y, radius, 0, Math.PI * 2);
+            break;
+          }
+          case 'arc': {
+            if (pts.length < 3) { ctx.restore(); return; }
+            const arcR = Math.sqrt((pts[1].x - pts[0].x) ** 2 + (pts[1].y - pts[0].y) ** 2);
+            const startAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+            const endAngle = Math.atan2(pts[2].y - pts[0].y, pts[2].x - pts[0].x);
+            ctx.arc(pts[0].x, pts[0].y, arcR, startAngle, endAngle);
+            break;
+          }
+        }
+
+        if (fillColor) {
+          ctx.fillStyle = fillColor;
+          ctx.fill('evenodd');
+        }
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      /** Draw square handle points for a selected shape */
+      const renderHandles = (pts: Point2D[]) => {
+        const hw = 6 / transform.scale; // handle half-width in drawing units
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5 / transform.scale;
+        for (const pt of pts) {
+          ctx.fillRect(pt.x - hw / 2, pt.y - hw / 2, hw, hw);
+          ctx.strokeRect(pt.x - hw / 2, pt.y - hw / 2, hw, hw);
+        }
+        ctx.restore();
+      };
+
+      // Render completed shapes
+      for (const shape of drawnShapes2D) {
+        const isSelected = shape.id === selectedShapeId;
+        renderShape(shape.points, shape.type, shape.strokeColor, shape.strokeWidth, shape.fillColor, isSelected);
+        if (isSelected) renderHandles(shape.points);
+      }
+
+      // Render in-progress shape preview
+      if (activeDrawingTool !== 'none' && inProgressPoints.length > 0) {
+        const previewPts = inProgressCursor ? [...inProgressPoints, inProgressCursor] : inProgressPoints;
+        ctx.save();
+        ctx.setLineDash([6 / transform.scale, 4 / transform.scale]);
+        ctx.globalAlpha = 0.7;
+        renderShape(previewPts, activeDrawingTool === 'polyline' ? 'polyline' : activeDrawingTool, '#1d4ed8', 0.015, null, false);
+        ctx.restore();
+        // Show placed points as dots
+        ctx.save();
+        ctx.fillStyle = '#1d4ed8';
+        for (const pt of inProgressPoints) {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 4 / transform.scale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // ── Snap indicator (drawn ON TOP of everything in drawing coords) ──────
+      if (snapResult?.type && snapResult.point) {
+        const sp = snapResult.point;
+        const r = 8 / transform.scale;
+        ctx.save();
+        ctx.lineWidth = 1.5 / transform.scale;
+        ctx.setLineDash([]);
+        if (snapResult.type === 'vertex') {
+          // Yellow square
+          ctx.strokeStyle = '#eab308';
+          ctx.fillStyle = 'rgba(234,179,8,0.15)';
+          ctx.beginPath();
+          ctx.rect(sp.x - r / 2, sp.y - r / 2, r, r);
+          ctx.fill();
+          ctx.stroke();
+        } else if (snapResult.type === 'midpoint') {
+          // Orange triangle
+          ctx.strokeStyle = '#f97316';
+          ctx.fillStyle = 'rgba(249,115,22,0.15)';
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y - r * 0.6);
+          ctx.lineTo(sp.x + r * 0.55, sp.y + r * 0.4);
+          ctx.lineTo(sp.x - r * 0.55, sp.y + r * 0.4);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          // Edge: green X
+          ctx.strokeStyle = '#22c55e';
+          const d = r * 0.4;
+          ctx.beginPath();
+          ctx.moveTo(sp.x - d, sp.y - d); ctx.lineTo(sp.x + d, sp.y + d);
+          ctx.moveTo(sp.x + d, sp.y - d); ctx.lineTo(sp.x - d, sp.y + d);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, r * 0.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ── Parametric offset handles ────────────────────────────────────────
+      if (offsetHandles.length > 0) {
+        ctx.save();
+        ctx.setLineDash([]);
+        for (const h of offsetHandles) {
+          const r = 6 / transform.scale;
+          const lw = 1.5 / transform.scale;
+          ctx.lineWidth = lw;
+          if (h.type === 'wall-start' || h.type === 'wall-end' ||
+              h.type === 'beam-start' || h.type === 'beam-end') {
+            // Diamond (rotated square)
+            const color = h.type.startsWith('wall') ? '#10b981' : '#f59e0b';
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color + '33';
+            ctx.save();
+            ctx.translate(h.x, h.y);
+            ctx.rotate(Math.PI / 4);
+            const s = r * 0.75;
+            ctx.fillRect(-s, -s, s * 2, s * 2);
+            ctx.strokeRect(-s, -s, s * 2, s * 2);
+            ctx.restore();
+          } else if (h.type === 'col-center') {
+            // Circle with crosshair
+            ctx.strokeStyle = '#f97316';
+            ctx.fillStyle = 'rgba(249,115,22,0.15)';
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            const cr = r * 0.7;
+            ctx.beginPath();
+            ctx.moveTo(h.x - cr, h.y);
+            ctx.lineTo(h.x + cr, h.y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(h.x, h.y - cr);
+            ctx.lineTo(h.x, h.y + cr);
+            ctx.stroke();
+          } else {
+            // Edge midpoint arrow (slab / room)
+            const color = h.type.startsWith('slab') ? '#06b6d4' : '#3b82f6';
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color + '33';
+            const [ax, ay] = h.dragAxis;
+            ctx.save();
+            ctx.translate(h.x, h.y);
+            ctx.rotate(Math.atan2(ay * h.dragSign, ax * h.dragSign));
+            ctx.beginPath();
+            ctx.moveTo(r, 0);
+            ctx.lineTo(-r * 0.6, -r * 0.6);
+            ctx.lineTo(-r * 0.6, r * 0.6);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+
       ctx.restore();
     }
 
@@ -1399,7 +1653,7 @@ export function Drawing2DCanvas({
         }
       }
     }
-  }, [drawing, transform, showHiddenLines, canvasSize, overrideEngine, overridesEnabled, entityColorMap, useIfcMaterials, measureMode, measureStart, measureCurrent, measureResults, measureSnapPoint, sheetEnabled, activeSheet, sectionAxis, isPinned, annotation2DActiveTool, annotation2DCursorPos, polygonAreaPoints, polygonAreaResults, textAnnotations, textAnnotationEditing, cloudAnnotationPoints, cloudAnnotations, selectedAnnotation]);
+  }, [drawing, transform, showHiddenLines, canvasSize, overrideEngine, overridesEnabled, entityColorMap, useIfcMaterials, measureMode, measureStart, measureCurrent, measureResults, measureSnapPoint, sheetEnabled, activeSheet, sectionAxis, isPinned, annotation2DActiveTool, annotation2DCursorPos, polygonAreaPoints, polygonAreaResults, textAnnotations, textAnnotationEditing, cloudAnnotationPoints, cloudAnnotations, selectedAnnotation, selectedEntityIds, drawnShapes2D, inProgressPoints, inProgressCursor, activeDrawingTool, selectedShapeId, offsetHandles]);
 
   return (
     <canvas

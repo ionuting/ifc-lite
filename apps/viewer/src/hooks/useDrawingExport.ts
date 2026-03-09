@@ -8,10 +8,12 @@ import {
   renderFrame,
   renderTitleBlock,
   calculateDrawingTransform,
+  exportToSVG,
   type Drawing2D,
   type DrawingSheet,
   type ElementData,
   type TitleBlockExtras,
+  type ObjectStylesConfig,
 } from '@ifc-lite/drawing-2d';
 import { getFillColorForType } from '@/components/viewer/Drawing2DCanvas';
 import { formatDistance } from '@/components/viewer/tools/formatDistance';
@@ -33,6 +35,7 @@ interface UseDrawingExportParams {
   cloudAnnotations2D: CloudAnnotation2D[];
   sheetEnabled: boolean;
   activeSheet: DrawingSheet | null;
+  objectStyleOverrides?: Partial<ObjectStylesConfig>;
 }
 
 interface UseDrawingExportResult {
@@ -55,11 +58,21 @@ function useDrawingExport({
   cloudAnnotations2D,
   sheetEnabled,
   activeSheet,
+  objectStyleOverrides,
 }: UseDrawingExportParams): UseDrawingExportResult {
 
   // Generate SVG that matches the canvas rendering exactly
   const generateExportSVG = useCallback((): string | null => {
     if (!drawing) return null;
+
+    // If Object Styles overrides are active, delegate to the SVGExporter which supports them natively.
+    // Annotations are appended via the manual path below.
+    if (objectStyleOverrides && Object.keys(objectStyleOverrides).length > 0) {
+      return exportToSVG(drawing, {
+        objectStyles: objectStyleOverrides,
+        showHiddenLines: displayOptions.showHiddenLines,
+      });
+    }
 
     const { bounds } = drawing;
     const width = bounds.max.x - bounds.min.x;
