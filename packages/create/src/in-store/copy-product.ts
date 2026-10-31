@@ -15,7 +15,7 @@
  *   - A shape created this session is copied record by record (with the
  *     styles on its items), so the copy can be reshaped on its own. A shape
  *     read from the file is shared by reference, as Duplicate has always
- *     done.
+ *     done, unless the caller asks for `shape: 'own'` (`copy-shape.ts`).
  *
  * The turn and move are storey-local metres: a turn counter-clockwise about
  * the vertical through `pivot`, then `offset`. On another storey the copy is
@@ -24,16 +24,17 @@
  */
 
 import { cloneEffectiveMetadata } from './edit/metadata-clone-effective.js';
-import { iterateEffectiveEntityIds, type IfcAttributeValue, type StoreEditor } from '@ifc-lite/mutations';
+import { iterateEffectiveEntityIds, type StoreEditor } from '@ifc-lite/mutations';
 import type { IfcDataStore } from '@ifc-lite/parser';
 import { generateIfcGuid, type RandomSource } from '@ifc-lite/encoding';
 import { duplicateInStore, type SourceAttributes } from './duplicate.js';
 import { resolveDuplicateSource } from './resolve-source.js';
 import { copyDependentSteps, copiedProductWork } from './copy-dependent-walk.js';
 import { asRef, createStyleEntityReader, indexExistingStyles, refList } from './style-entity-reader.js';
+import { cloneShape, type CopyShape } from './copy-shape.js';
 import {
   IDENTITY_FRAME, applyRigid, composeRigid, frameInAncestor, invertRigid, readOwnPlacement,
-  refToken, remapRefs, turnDirection, turnThenMove, finiteCopyFrame,
+  refToken, turnDirection, turnThenMove, finiteCopyFrame,
   type CopyVec3, type LiveRead, type RigidFrame,
 } from './copy-frame.js';
 
@@ -66,8 +67,6 @@ export interface CopyProductResult {
 /** Classes that are copied with their host, never on their own. */
 const HOSTED_TYPES = new Set(['IFCOPENINGELEMENT', 'IFCOPENINGSTANDARDCASE', 'IFCVOIDINGFEATURE']);
 const SPATIAL_TYPES = new Set(['IFCSPACE', 'IFCBUILDINGSTOREY', 'IFCBUILDING', 'IFCSITE', 'IFCSPATIALZONE', 'IFCEXTERNALSPATIALELEMENT', 'IFCPROJECT']);
-/** A shape bigger than this is not deep-copied (a pathological overlay graph). */
-const MAX_CLONED_SHAPE_RECORDS = 50_000;
 
 interface HostedLink { readonly id: number; readonly ownerHistory: string | null }
 
@@ -149,8 +148,12 @@ export function copyRefusal(ctx: CopyContext, sourceId: number): string | null {
   return null;
 }
 
-/** Copy the complete product graph. `options.Name` overrides only the root product’s Name. */
-export function copyProductInStore(ctx: CopyContext, sourceId: number, transform: CopyTransform = {}, options: { Name?: string } = {}): CopyProductResult {
+/**
+ * Copy the complete product graph. `options.Name` overrides only the root
+ * product’s Name. `options.shape` (`'shared'` by default) chooses whether the
+ * copies of file shapes share them or get their own (`copy-shape.ts`).
+ */
+export function copyProductInStore(ctx: CopyContext, sourceId: number, transform: CopyTransform = {}, options: { Name?: string; shape?: CopyShape } = {}): CopyProductResult {
   const refusal = copyRefusal(ctx, sourceId);
   if (refusal) throw new Error(refusal);
   copiedProductWork(ctx, sourceId);
@@ -163,11 +166,11 @@ export function copyProductInStore(ctx: CopyContext, sourceId: number, transform
 
   const targetStoreyId = transform.targetStoreyId ?? source.storeyId;
   const placed = placeOnStorey(ctx.read, source, targetStoreyId, move);
-  const copy = writeCopy(ctx, source, placed, targetStoreyId, options.Name);
+  const copy = writeCopy(ctx, source, placed, targetStoreyId, options.shape, options.Name);
 
   // Openings, their doors and windows, and the parts of an assembly follow it.
   const acc: Dependents = { placements: new Map([[source.placementExpressId, copy.placementId]]), openingIds: [], fillingIds: [], partIds: [], copiedFrom: new Map([[copy.id, sourceId]]) };
-  copyDependents(ctx, sourceId, copy.id, source, targetStoreyId, move, acc);
+  copyDependents(ctx, sourceId, copy.id, source, targetStoreyId, move, acc, options.shape);
   for (const [copiedId, originalId] of acc.copiedFrom) cloneEffectiveMetadata(ctx.editor.getMutationView(), ctx.editor, originalId, [copiedId]);
   return {
     copyId: copy.id, openingIds: acc.openingIds, fillingIds: acc.fillingIds, partIds: acc.partIds, storeyId: targetStoreyId,
@@ -185,7 +188,7 @@ interface Dependents {
 }
 
 /** The copies of `sourceId`'s openings (with their doors and windows) and parts (recursively), written under `copyId`. */
-function copyDependents(ctx: CopyContext, sourceId: number, copyId: number, root: SourceAttributes, targetStoreyId: number | null, move: RigidFrame, acc: Dependents): void {
+function copyDependents(ctx: CopyContext, sourceId: number, copyId: number, root: SourceAttributes, targetStoreyId: number | null, move: RigidFrame, acc: Dependents, shape?: CopyShape): void {
   const copies = new Map([[sourceId, copyId]]);
   for (const step of copyDependentSteps(ctx, sourceId)) {
     if (step.kind === 'assembly') {
@@ -195,7 +198,7 @@ function copyDependents(ctx: CopyContext, sourceId: number, copyId: number, root
     }
     const parentCopy = copies.get(step.parentId)!;
     const source = resolveDuplicateSource(ctx.store, step.sourceId, ctx.editor);
-    const copy = writeCopy(ctx, source, follow(ctx.read, source, root, targetStoreyId, acc.placements, move), step.kind === 'filling' ? targetStoreyId : null);
+    const copy = writeCopy(ctx, source, follow(ctx.read, source, root, targetStoreyId, acc.placements, move), step.kind === 'filling' ? targetStoreyId : null, shape);
     acc.placements.set(source.placementExpressId, copy.placementId);
     acc.copiedFrom.set(copy.id, step.sourceId); copies.set(step.sourceId, copy.id);
     if (step.kind === 'part') acc.partIds.push(copy.id);
@@ -270,7 +273,7 @@ function follow(
   return placeOnStorey(read, { ...source, storeyId: host.storeyId }, targetStoreyId, move);
 }
 
-function writeCopy(ctx: CopyContext, source: SourceAttributes, placed: Placed, storeyId: number | null, name?: string): { id: number; placementId: number } {
+function writeCopy(ctx: CopyContext, source: SourceAttributes, placed: Placed, storeyId: number | null, shapeMode?: CopyShape, name?: string): { id: number; placementId: number } {
   if (![...placed.location, ...placed.turn.origin, placed.turn.c, placed.turn.s].every(Number.isFinite)) throw new Error('Copy placement must remain finite in native model units');
   const turned = Math.abs(placed.turn.s) > 1e-12 || placed.turn.c < 0;
   const own = turned ? readOwnPlacement(ctx.read, source.placementExpressId) : null;
@@ -282,7 +285,7 @@ function writeCopy(ctx: CopyContext, source: SourceAttributes, placed: Placed, s
     return `#${ctx.editor.addEntity('IfcDirection', [moved]).expressId}`;
   };
   const attributes = [...source.attributes];
-  const shape = cloneCreatedShape(ctx, source.representationId);
+  const shape = cloneShape(ctx, source.representationId, shapeMode);
   if (shape !== null) attributes[6] = `#${shape}`;
   const built = duplicateInStore(ctx.editor, {
     ...source,
@@ -305,54 +308,6 @@ function writeCopy(ctx: CopyContext, source: SourceAttributes, placed: Placed, s
 
 function relate(ctx: CopyContext, type: 'IfcRelVoidsElement' | 'IfcRelFillsElement', ownerHistory: string | null, relating: number, related: number): void {
   ctx.editor.addEntity(type, [generateIfcGuid(ctx.guidRandom), ownerHistory, null, null, `#${relating}`, `#${related}`]);
-}
-
-/**
- * Copy a shape created this session, record by record, with the styles on
- * its items; null when the shape is the file's own (it is then shared).
- * Records the file holds (a representation context) stay shared references.
- */
-function cloneCreatedShape(ctx: CopyContext, shapeId: number | null): number | null {
-  const view = ctx.editor.getMutationView();
-  const created = (id: number) => view.getNewEntity(id) !== null && !view.isDeleted(id);
-  if (shapeId === null || !created(shapeId)) return null;
-  const copies = new Map<number, number>();
-  const expanded = new Set<number>();
-  // Iterative post-order: children are written before the records that name them.
-  const stack = [shapeId];
-  while (stack.length > 0) {
-    const id = stack[stack.length - 1];
-    const record = copies.has(id) ? null : ctx.read(id);
-    if (!record) { stack.pop(); continue; }
-    if (!expanded.has(id)) {
-      expanded.add(id);
-      if (expanded.size > MAX_CLONED_SHAPE_RECORDS) throw new Error(`The shape of this element is too large to copy (over ${MAX_CLONED_SHAPE_RECORDS} records)`);
-      for (const child of childRefs(record.attributes)) if (created(child) && !expanded.has(child)) stack.push(child);
-      continue;
-    }
-    stack.pop();
-    copies.set(id, ctx.editor.addEntity(record.type, record.attributes.map((a) => remapRefs(a, copies))).expressId);
-  }
-  for (const [from, to] of copies) {
-    const styledItem = ctx.styledBy.get(from);
-    const style = styledItem === undefined ? null : ctx.read(styledItem);
-    // IfcStyledItem(Item, Styles, Name): the same styles, on the copied item.
-    if (style) ctx.editor.addEntity('IfcStyledItem', [`#${to}`, refList(style.attributes[1]).map((id) => `#${id}`), (style.attributes[2] ?? null) as IfcAttributeValue]);
-  }
-  return copies.get(shapeId) ?? null;
-}
-
-function childRefs(values: readonly unknown[]): number[] {
-  const out: number[] = [];
-  const visit = (value: unknown) => {
-    if (Array.isArray(value)) value.forEach(visit);
-    else if (typeof value === 'string') {
-      const id = asRef(value);
-      if (id !== null) out.push(id);
-    }
-  };
-  values.forEach(visit);
-  return out;
 }
 
 /**

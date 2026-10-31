@@ -4630,6 +4630,7 @@
     "CopyArrayParams: interface",
     "CopyContext: interface",
     "CopyProductResult: interface",
+    "CopyShape: type",
     "CopyTransform: interface",
     "CostAnchor: interface",
     "CostArithmeticOperator: type",

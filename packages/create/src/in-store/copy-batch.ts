@@ -7,6 +7,7 @@ import type { StoreEditor } from '@ifc-lite/mutations';
 import type { IfcDataStore } from '@ifc-lite/parser';
 import { copyProductInStore, copyRefusal, createCopyContext, productStoreyOrigin, type CopyContext, type CopyProductResult, type CopyTransform } from './copy-product.js';
 import type { DuplicateInStoreOptions } from './duplicate.js';
+import type { CopyShape } from './copy-shape.js';
 import { copiedProductWork, COPY_PRODUCT_WORK_LIMIT } from './copy-dependent-walk.js';
 
 /** Bound pruned root fan-out before allocating products/transforms. */
@@ -61,6 +62,8 @@ export function copiedProductsInStore(ctx: CopyContext, ids: readonly number[]):
 export interface CopyBatchOptions {
   /** Duplicate's naming/randomness policy; displacement is supplied by transforms. */
   readonly duplicate?: Pick<DuplicateInStoreOptions, 'name' | 'guidRandom'>;
+  /** `'own'`: copies of file shapes get their own records instead of sharing them (default `'shared'`, #8447). */
+  readonly shape?: CopyShape;
 }
 
 /**
@@ -92,10 +95,10 @@ export function copyBatchInStore(
     const sources = copySourcesInStore(ctx, ids, transforms.length);
     if ('refusal' in sources) throw new Error(sources.refusal);
     return transforms.flatMap((transform) => sources.ids.map((id) => {
-      if (!options.duplicate) return copyProductInStore(ctx, id, transform);
+      if (!options.duplicate) return copyProductInStore(ctx, id, transform, { shape: options.shape });
       const sourceName = ctx.read(id)?.attributes[2];
       const name = options.duplicate.name ?? (typeof sourceName === 'string' && sourceName.length > 0 ? `${sourceName} (copy)` : sourceName);
-      return copyProductInStore(ctx, id, transform, typeof name === 'string' ? { Name: name } : {});
+      return copyProductInStore(ctx, id, transform, { shape: options.shape, ...(typeof name === 'string' ? { Name: name } : {}) });
     }));
   });
 }

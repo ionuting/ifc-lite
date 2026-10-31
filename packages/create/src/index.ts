@@ -180,6 +180,7 @@ export type {
 export { copyBatchInStore, copySourcesInStore, copiedProductsInStore } from './in-store/copy-batch.js';
 export { arrayCopyTransforms, type CopyArrayParams } from './in-store/copy-array.js';
 export type { CopyTransform } from './in-store/copy-product.js';
+export type { CopyShape } from './in-store/copy-shape.js';
 
 export { setElementSizeInStore } from './in-store/element-size-edit.js';
 export { resizeWallInStore } from './in-store/wall-size-edit.js';
