@@ -231,24 +231,6 @@ describe('placement-edit', () => {
     assert.ok(Math.abs(state.refDirection[1] - 1) < 1e-9);
   });
 
-  it('rotateProductYaw refuses to act when RefDirection is implicit', () => {
-    // Avoids the orphan-on-undo problem: creating a fresh
-    // IfcDirection here without a batched-mutation primitive would
-    // leave it behind after undo. Refusing is the safer default
-    // until we have multi-entity atomic undo.
-    const { point, axis, local, column } = makeFixture();
-    const editor = new StubStoreEditor([point, axis, local, column]);
-    const view = new StubView();
-    const result = rotateProductYaw(
-      dataStoreStub,
-      view as unknown as Parameters<typeof rotateProductYaw>[1],
-      editor as unknown as Parameters<typeof rotateProductYaw>[2],
-      100,
-      Math.PI / 4,
-    );
-    assert.strictEqual(result.ok, false);
-  });
-
   /**
    * Wall edit chain — fixture mirrors `addWallToStore`'s output:
    *   #100 IfcWall
@@ -544,18 +526,18 @@ describe('placement-edit', () => {
     }
   });
 
-  it('rotateProductYaw reports the implicit-RefDirection reason distinctly from the chain-resolution reason', () => {
+  it('rotateProductYaw writes out an implicit Axis and RefDirection, then turns it (#8446)', () => {
     const { point, axis, local, column } = makeFixture();
-    const editor = new StubStoreEditor([point, axis, local, column]) as unknown as Parameters<typeof rotateProductYaw>[2];
+    const stub = new StubStoreEditor([point, axis, local, column]);
+    const editor = stub as unknown as Parameters<typeof rotateProductYaw>[2];
     const view = new StubView() as unknown as Parameters<typeof rotateProductYaw>[1];
     const result = rotateProductYaw(dataStoreStub, view, editor, 100, Math.PI / 4);
-    assert.strictEqual(result.ok, false);
-    if (!result.ok) {
-      assert.strictEqual(
-        result.reason,
-        'Entity has an implicit reference direction; rotation requires an explicit IfcDirection on its axis placement.',
-      );
-    }
+    assert.strictEqual(result.ok, true);
+    // IfcAxis2Placement3D carries both directions or neither.
+    const [, axisRef, refRef] = stub.getNewEntity(98)!.attributes as string[];
+    assert.deepStrictEqual(stub.getNewEntity(Number(axisRef.slice(1)))!.attributes, [[0, 0, 1]]);
+    const ratios = stub.getNewEntity(Number(refRef.slice(1)))!.attributes[0] as number[];
+    assert.ok(Math.abs(ratios[0] - Math.SQRT1_2) < 1e-12 && Math.abs(ratios[1] - Math.SQRT1_2) < 1e-12 && ratios[2] === 0);
   });
 
   it('translateProduct and setProductPosition report the chain-resolution reason', () => {

@@ -72,6 +72,15 @@ export class StubStoreEditor {
     this.overlay.set(id, { expressId: id, type, attributes: attributes.slice() });
     return { expressId: id };
   }
+
+  /** No overlay copy: the draft is this editor, so writes land directly. */
+  runAtomic<T>(edit: (draft: this) => T): T {
+    return edit(this);
+  }
+
+  getMutationView(): StubView {
+    return new StubView();
+  }
 }
 
 /**

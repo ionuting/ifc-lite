@@ -51,6 +51,7 @@ import { copyElements, copySources, withHostedFillings } from '@/lib/commands/mo
 import { newMutationBatchId } from './mutation-batch-tags.js';
 import { remeshAfterCommit } from '@/lib/remesh/remesh-registry';
 import { remeshGridPlacementAfterCommit } from './mutation-grid-remesh';
+import { recordModellingCommit } from './mutation-modelling-records.js';
 
 export type { AuthoredElement };
 import { createCostUndoMutations, type CostUndoMethods } from './mutation-cost-undo.js';
@@ -61,6 +62,7 @@ import { invalidateHistoryPatch } from './mutation-redo-remote-guard.js';
 import {
   resolvePlacementChain,
   resolveRotationState,
+  rotateProductYaw,
   resolveWallEditChain,
   projectOntoWallAxis,
 } from '@/lib/placement-edit.js';
@@ -1405,25 +1407,23 @@ export const createMutationSlice: StateCreator<
     if (view && dataStore) {
       const editor = getOrCreateStoreEditor(get, set, modelId);
       // resolveRotationState gives the current angle + whether RefDirection is
-      // explicit. When implicit we refuse (materialising a fresh IfcDirection
-      // needs multi-mutation atomic undo). Every in-store builder emits an
-      // explicit RefDirection, so that only trips on hand-rolled entities.
+      // explicit. An implicit (`$`) one is written out and turned by
+      // `rotateProductYaw` as one recorded batch, so one undo restores it (#8446).
       const state = editor ? resolveRotationState(dataStore, view, editor, expressId) : null;
-      if (state && state.refDirectionId === null) {
-        return {
-          ok: false,
-          reason:
-            'Entity has an implicit reference direction (no IfcDirection on its axis placement). Rotation would require materialising a new IfcDirection, which isn\'t undoable yet.',
-        };
-      }
-      if (state && state.refDirectionId !== null) {
+      if (state) {
         const newYaw = state.yawZ + deltaYaw;
         const newRatios: [number, number, number] = [
           Math.cos(newYaw),
           Math.sin(newYaw),
           state.refDirection[2],
         ];
-        const mutation = get().setPositionalAttribute(modelId, state.refDirectionId, 0, newRatios);
+        let mutation: Mutation | null;
+        if (state.refDirectionId !== null) mutation = get().setPositionalAttribute(modelId, state.refDirectionId, 0, newRatios);
+        else {
+          const turned = recordModellingCommit(api, modelId, (ed, ds) => rotateProductYaw(ds, ed.getMutationView(), ed, expressId, deltaYaw));
+          if (!turned.ok) return turned;
+          mutation = view.getMutations().at(-1) ?? null;
+        }
         if (!remeshGridPlacementAfterCommit(get, modelId, expressId, mutation)) {
           // Live-rotate the rendered mesh about its bbox centre (IFC yaw about Z
           // = renderer yaw about +Y, same angle).

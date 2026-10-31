@@ -22,6 +22,7 @@
 
 import { EntityExtractor, resolveEffectiveEntityRecord, type IfcDataStore } from '@ifc-lite/parser';
 import type { MutablePropertyView, StoreEditor } from '@ifc-lite/mutations';
+import { firstProjAxis } from '@ifc-lite/data';
 
 /** Synchronous source decoding for headless edits. The viewer may override
  * this reader at boot; overlay reads never require a source buffer. */
@@ -290,10 +291,9 @@ export function setProductPosition(
 
 /**
  * Snapshot of the placement's IfcAxis2Placement3D rotation.
- * `refDirectionId === null` means the slot is implicit (STEP `$`) —
- * the default direction `[1, 0, 0]` is reported, but callers that
- * want to rotate must refuse this case (no IfcDirection to write to
- * without orphaning one on undo).
+ * `refDirectionId === null` means the slot is implicit (STEP `$`): the
+ * direction reported is the renderer's fill off the Axis (`firstProjAxis`,
+ * #5992), which `rotateProductYaw` writes out before turning it.
  */
 export interface RotationState {
   axisPlacementId: number;
@@ -316,12 +316,13 @@ export function resolveRotationState(
   // IfcAxis2Placement3D index 2 = RefDirection (an optional IfcDirection ref).
   const refDirectionId = asExpressIdRef(axisAttrs[2]);
   if (refDirectionId === null) {
-    return {
-      axisPlacementId: chain.axisPlacementId,
-      refDirectionId: null,
-      refDirection: [1, 0, 0],
-      yawZ: 0,
-    };
+    // IfcAxis2Placement3D index 1 = Axis; `$` is +Z.
+    const axisId = asExpressIdRef(axisAttrs[1]);
+    const axis = axisId === null ? [0, 0, 1] as [number, number, number]
+      : asDirectionRatios(readPlacementAttributes(dataStore, view, editor, axisId)?.[0]);
+    if (!axis) return null;
+    const refDirection = firstProjAxis(axis).map((v) => v + 0) as [number, number, number]; // no -0
+    return { axisPlacementId: chain.axisPlacementId, refDirectionId: null, refDirection, yawZ: Math.atan2(refDirection[1], refDirection[0]) };
   }
   const dirAttrs = readPlacementAttributes(dataStore, view, editor, refDirectionId);
   if (!dirAttrs) return null;
@@ -340,18 +341,29 @@ export type RotateResult =
   | { ok: false; reason: string };
 
 /**
+ * Give an axis placement whose RefDirection is `$` explicit directions, in
+ * the caller's transaction: the reported fill as a new RefDirection, and +Z
+ * as Axis when that is `$` too (IFC sets both or neither). Returns the
+ * RefDirection id; an explicit one is returned untouched.
+ */
+export function materializeRefDirection(dataStore: IfcDataStore, view: MutablePropertyView, editor: StoreEditor, state: RotationState): number | null {
+  if (state.refDirectionId !== null) return state.refDirectionId;
+  const axisAttrs = readPlacementAttributes(dataStore, view, editor, state.axisPlacementId);
+  if (!axisAttrs) return null;
+  if (asExpressIdRef(axisAttrs[1]) === null) {
+    editor.setPositionalAttribute(state.axisPlacementId, 1, `#${editor.addEntity('IfcDirection', [[0, 0, 1]]).expressId}`);
+  }
+  const refDirectionId = editor.addEntity('IfcDirection', [[...state.refDirection]]).expressId;
+  editor.setPositionalAttribute(state.axisPlacementId, 2, `#${refDirectionId}`);
+  return refDirectionId;
+}
+
+/**
  * Rotate an IfcProduct about the storey-up Z axis by `deltaYaw`
- * radians. Updates RefDirection on the IfcAxis2Placement3D in place
- * when one already exists.
- *
- * Refuses to operate when the placement has no explicit RefDirection
- * (the implicit `[1, 0, 0]` STEP default). Materialising a fresh
- * IfcDirection there would require a multi-mutation atomic undo
- * entry to avoid orphans on undo, which the store doesn't have yet.
- * Every entity emitted by `@ifc-lite/create`'s in-store builders
- * carries an explicit RefDirection, so the implicit branch only
- * trips on hand-rolled source-buffer entities — surfacing a clear
- * refusal beats silently leaking entities.
+ * radians. Updates RefDirection on the IfcAxis2Placement3D in place.
+ * A placement leaving it `$` gets explicit directions first
+ * (`materializeRefDirection`), all in one `runAtomic` publication, so a
+ * refusal leaves nothing behind and a recorded compound undoes it in one step.
  */
 export function rotateProductYaw(
   dataStore: IfcDataStore,
@@ -368,13 +380,6 @@ export function rotateProductYaw(
         'Entity placement is not a simple IfcLocalPlacement → IfcAxis2Placement3D chain',
     };
   }
-  if (state.refDirectionId === null) {
-    return {
-      ok: false,
-      reason:
-        'Entity has an implicit reference direction; rotation requires an explicit IfcDirection on its axis placement.',
-    };
-  }
   const newYaw = state.yawZ + deltaYaw;
   const newRatios: [number, number, number] = [
     Math.cos(newYaw),
@@ -382,6 +387,11 @@ export function rotateProductYaw(
     state.refDirection[2],
   ];
   if (!Number.isFinite(newYaw) || !newRatios.every(Number.isFinite)) return { ok: false, reason: 'Placement rotation overflow: derived direction must be finite' };
-  editor.setPositionalAttribute(state.refDirectionId, 0, newRatios);
+  if (state.refDirectionId !== null) editor.setPositionalAttribute(state.refDirectionId, 0, newRatios);
+  else if (!editor.runAtomic((draft) => {
+    const refDirectionId = materializeRefDirection(dataStore, draft.getMutationView(), draft, state);
+    if (refDirectionId !== null) draft.setPositionalAttribute(refDirectionId, 0, newRatios);
+    return refDirectionId !== null;
+  })) return { ok: false, reason: 'Entity axis placement could not be read' };
   return { ok: true, oldYawZ: state.yawZ, newYawZ: newYaw, newRefDirection: newRatios };
 }
